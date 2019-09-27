@@ -270,38 +270,27 @@ lock_try_acquire (struct lock *lock)
 void
 lock_release (struct lock *lock) 
 {
-  struct thread* cur = thread_current ();
-  struct thread* t = NULL;
-  struct list_elem* e = NULL;
-  struct list *dlist = NULL;
-  int yield_token = 0;
+  enum intr_level old_level;
 
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
+  old_level = intr_disable ();
+
+  /* remove lock waiter from the donation list */
+  /* make as function! */
+  thread_clean_donation_list (lock);
+
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 
-  dlist = &cur->donations;
-  if (!list_empty (dlist))
-  {
-    yield_token = 1;
-    for (e = list_begin (dlist); e != list_end (dlist);
-         e = list_next (e))
-    {
-      t = list_entry (e, struct thread, donated_elem);
-      if (t->wait_on_lock == lock)
-      {
-        list_remove (e);
-        break;
-      }
-    }
-  }
+  /* set priority properly with regarding the donation list */
   thread_set_priority_properly ();
 
   /* Priority Preemption */
-  if (yield_token == 1)
-    thread_yield();
+  thread_preemption ();
+
+  intr_set_level (old_level);
 }
 
 /* Returns true if the current thread holds LOCK, false

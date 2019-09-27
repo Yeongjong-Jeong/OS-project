@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h" /* added */
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -138,7 +139,7 @@ void thread_preemption (void);
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
-void thrad_donate_priority (void);
+void thread_donate_priority (void);
 int thread_get_priority (void);
 void thread_set_priority (int);
 void thread_set_priority_properly (void);
@@ -147,6 +148,7 @@ void thread_set_priority_donation (struct thread*);
 void thread_set_priority_nested_donation (struct thread*, struct list_elem*, int);
 void thread_set_wait_on_lock (struct lock*);
 void thread_clear_wait_on_lock (void);
+void thread_clean_donation_list (struct lock *);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

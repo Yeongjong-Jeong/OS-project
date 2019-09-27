@@ -382,6 +382,12 @@ thread_get_priority (void)
   return thread_current ()->priority;
 }
 
+void
+thread_donate_priority (void)
+{
+
+}
+
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) 
@@ -549,6 +555,38 @@ thread_clear_wait_on_lock (void)
   old_level = intr_disable ();
   cur->wait_on_lock = NULL;
   intr_set_level (old_level);
+}
+
+void
+thread_clean_donation_list (struct lock *lock)
+{
+  struct thread *cur = thread_current ();
+  struct thread *t = NULL;
+  struct list_elem *e = NULL;
+  struct list *donation_list = NULL;
+
+  ASSERT (lock != NULL);
+  ASSERT (lock_held_by_current_thread (lock));
+  ASSERT (intr_get_level () == INTR_OFF);
+  
+  donation_list = &cur->donations;
+  if (!list_empty (donation_list))
+  {
+    for (e = list_begin (donation_list); e != list_end (donation_list);
+         e = list_next (e))
+    {
+      t = list_entry (e, struct thread, donated_elem);
+      if (t->wait_on_lock == lock)
+      {
+        list_remove (e);
+        break;
+        /* Breaks because donator could donate only
+         * when it has the higher prioirty than other
+         * , and also the lower one are kicked out when higher one comes in. */
+      }
+    }
+  
+  }
 }
 
 /* Sets the current thread's nice value to NICE. */
