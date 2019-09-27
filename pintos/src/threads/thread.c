@@ -383,9 +383,40 @@ thread_get_priority (void)
 }
 
 void
-thread_donate_priority (void)
+thread_donate_priority (struct thread *lock_holder, struct lock *lock)
 {
+  struct thread *t = NULL;
+  struct list_elem *e = NULL;
 
+  ASSERT (!intr_context ());
+  ASSERT (is_thread (lock_holder));
+  ASSERT (!lock_held_by_current_thread (lock));
+  ASSERT (intr_get_level () == INTR_OFF);
+
+  /* From the donation list of the donation receiving thread,
+       * removes the donated thread which waits for the same lock if exists
+       * , because it has smaller priority than the curren thread. */ 
+  for (e = list_begin (&lock_holder->donations);
+       e != list_end (&lock_holder->donations); e = list_next (e))
+  {
+    t = list_entry (e, struct thread, donated_elem);
+    if (t->wait_on_lock == lock)
+    {
+      list_remove (e);
+      break;
+      /* Because this "break" operation
+       * , there's only one thread waiting for the same lock
+       * , so we don't need to traverse further. */
+    }
+  }
+
+  /* Puts the current thread's D_ELEM in the donation list. */
+  list_insert_ordered (&lock_holder->donations,
+                       &thread_current ()->donated_elem,
+                       cmp_priority_donated_elem, NULL);
+
+  /* Priority Donation */
+  thread_set_priority_donation (lock_holder);
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
@@ -475,17 +506,15 @@ void
 thread_set_priority_donation (struct thread* receiver)
 {
   int new_priority;
-  enum intr_level old_level;
   struct thread* donator = NULL;
   
   ASSERT (is_thread (receiver));
   ASSERT (!list_empty (&receiver->donations));
+  ASSERT (intr_get_level () == INTR_OFF);
 
   donator = list_entry (list_begin (&receiver->donations),
                         struct thread, donated_elem);
   new_priority = donator->priority;
-
-  old_level = intr_disable ();
 
   if (receiver->priority_mine == 0)
     receiver->priority_mine = receiver->priority;
@@ -495,8 +524,6 @@ thread_set_priority_donation (struct thread* receiver)
   if (receiver->wait_on_lock != NULL && receiver->wait_on_lock->holder != NULL) 
     thread_set_priority_nested_donation (receiver, 
                                          &donator->donated_elem, new_priority);
-
-  intr_set_level (old_level);
 
 }
 

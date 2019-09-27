@@ -197,14 +197,15 @@ void
 lock_acquire (struct lock *lock)
 {
   struct thread *lock_holder = NULL;
-  struct thread *t = NULL;
-  struct list_elem *e = NULL;
+  enum intr_level old_level;
 
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
   lock_holder = lock->holder;
+
+  old_level = intr_disable ();
 
   /* If the lock is not available */
   if (lock->holder != NULL)
@@ -215,31 +216,12 @@ lock_acquire (struct lock *lock)
     /* If the priority of the thread which has lock
      * is less than that of the current thread, donates priority. */
     if (lock_holder->priority < thread_get_priority ())
-    {
-      /* From the donation list of the donation receiving thread,
-       * removes the donated thread which waits for the same lock if exists
-       * , because it has smaller priority than the curren thread. */
-      for (e = list_begin (&lock_holder->donations);
-           e != list_end (&lock_holder->donations); e = list_next (e))
-      {
-        t = list_entry (e, struct thread, donated_elem);
-        if (t->wait_on_lock == lock)
-          list_remove (e);
-      }
-
-      /* Puts the current thread's D_ELEM in the donation list. */
-      list_insert_ordered (&lock_holder->donations,
-                           &thread_current ()->donated_elem,
-                           cmp_priority_donated_elem, NULL);
-
-      /* Priority Donation */
-      thread_set_priority_donation (lock_holder);
-    }
-  
+      thread_donate_priority (lock_holder, lock);
   }
 
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
+  intr_set_level (old_level);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
