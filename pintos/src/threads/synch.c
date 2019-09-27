@@ -253,6 +253,7 @@ void
 lock_release (struct lock *lock) 
 {
   enum intr_level old_level;
+  int is_nested_donated = 0;
 
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
@@ -261,13 +262,15 @@ lock_release (struct lock *lock)
 
   /* remove lock waiter from the donation list */
   /* make as function! */
-  thread_clean_donation_list (lock);
+  is_nested_donated = thread_clean_donation_list (lock);
 
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 
-  /* set priority properly with regarding the donation list */
-  thread_set_priority_properly ();
+  /* set priority properly
+   * with regarding the nested priority and the donation list */
+  if (!is_nested_donated)
+    thread_set_priority_properly ();
 
   /* Priority Preemption */
   thread_preemption ();

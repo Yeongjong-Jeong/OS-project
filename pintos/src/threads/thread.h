@@ -148,7 +148,7 @@ void thread_set_priority_donation (struct thread*);
 void thread_set_priority_nested_donation (struct thread*, struct list_elem*, int);
 void thread_set_wait_on_lock (struct lock*);
 void thread_clear_wait_on_lock (void);
-void thread_clean_donation_list (struct lock *);
+int thread_clean_donation_list (struct lock *);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

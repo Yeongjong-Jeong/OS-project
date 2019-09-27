@@ -533,7 +533,7 @@ thread_set_priority_nested_donation (struct thread* receiver,
 {
   struct thread* lock_holder = NULL;
 
-  ASSERT (intr_get_level == INTR_OFF);
+  ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (is_thread (receiver));
   ASSERT (donated_elem != NULL);
   ASSERT (receiver->wait_on_lock != NULL && receiver->wait_on_lock->holder != NULL);
@@ -548,8 +548,8 @@ thread_set_priority_nested_donation (struct thread* receiver,
     if (lock_holder->priority_mine == 0)
       lock_holder->priority_mine = lock_holder->priority;
     lock_holder->priority = new_priority;
-    list_insert_ordered (&lock_holder->donations, donated_elem,
-                         cmp_priority_donated_elem, NULL);
+    /* list_insert_ordered (&lock_holder->donations, donated_elem,
+                         cmp_priority_donated_elem, NULL); */
 
     if (lock_holder->wait_on_lock != NULL &&
         lock_holder->wait_on_lock->holder != NULL)
@@ -584,12 +584,14 @@ thread_clear_wait_on_lock (void)
   intr_set_level (old_level);
 }
 
-void
+int
 thread_clean_donation_list (struct lock *lock)
 {
   struct thread *cur = thread_current ();
   struct thread *t = NULL;
+  struct thread *dt = NULL; /* highest donator */
   struct list_elem *e = NULL;
+  struct list_elem *de = NULL; /* highest donator's DONATED_ELEM */
   struct list *donation_list = NULL;
 
   ASSERT (lock != NULL);
@@ -606,7 +608,17 @@ thread_clean_donation_list (struct lock *lock)
       if (t->wait_on_lock == lock)
       {
         list_remove (e);
-        break;
+
+        /* There can be a nested donator */
+        if (t->priority != cur->priority)
+        {
+          de = list_begin (donation_list);
+          dt = list_entry (de, struct thread, donated_elem);
+          
+          if (dt->priority != cur->priority)
+            return 1; /* nested donation */
+        }
+        return 0;
         /* Breaks because donator could donate only
          * when it has the higher prioirty than other
          * , and also the lower one are kicked out when higher one comes in. */
@@ -614,6 +626,7 @@ thread_clean_donation_list (struct lock *lock)
     }
   
   }
+  return 0;
 }
 
 /* Sets the current thread's nice value to NICE. */
