@@ -383,8 +383,10 @@ thread_get_priority (void)
 }
 
 void
-thread_donate_priority (struct thread *lock_holder, struct lock *lock)
+thread_donate_priority (void)
 {
+  struct lock *lock = thread_current ()->wait_on_lock;
+  struct thread *lock_holder = lock->holder;
   struct thread *t = NULL;
   struct list_elem *e = NULL;
 
@@ -467,10 +469,10 @@ thread_set_priority_properly (void)
 
   old_level = intr_disable ();
 
-  if (cur->priority_mine != 0)
+  if (cur->priority_mine != -1)
   {
     cur->priority = cur->priority_mine;
-    cur->priority_mine = 0;
+    cur->priority_mine = -1;
   }
   thread_set_priority_if_donated ();
 
@@ -516,7 +518,7 @@ thread_set_priority_donation (struct thread* receiver)
                         struct thread, donated_elem);
   new_priority = donator->priority;
 
-  if (receiver->priority_mine == 0)
+  if (receiver->priority_mine == -1)
     receiver->priority_mine = receiver->priority;
   receiver->priority = new_priority;
 
@@ -545,7 +547,7 @@ thread_set_priority_nested_donation (struct thread* receiver,
     /* There can be a situation which the lock holder thread
      * already received donation, and the donated priority is less than 
      * the current new priority. */
-    if (lock_holder->priority_mine == 0)
+    if (lock_holder->priority_mine == -1)
       lock_holder->priority_mine = lock_holder->priority;
     lock_holder->priority = new_priority;
     /* list_insert_ordered (&lock_holder->donations, donated_elem,
@@ -747,7 +749,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
   t->wakeup_tick = 0;
-  t->priority_mine = 0;
+  t->priority_mine = -1; /* -1 means t->priority is mine. */
   t->wait_on_lock = NULL;
   list_init (&t->donations);
 }
