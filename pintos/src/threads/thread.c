@@ -334,6 +334,30 @@ thread_yield (void)
   intr_set_level (old_level);
 }
 
+/* Priority Preemption
+ * If the priority of the current thread is less than
+ * that of the thread in the ready list, the current thread gives the control up. */
+void
+thread_preemption (void)
+{
+  struct thread *cur = thread_current ();
+  struct thread *ready = NULL;
+  struct list_elem *e = NULL;
+
+  ASSERT (intr_get_level () == INTR_OFF);
+  ASSERT (!intr_context ());
+
+  if (!list_empty (&ready_list))
+  {
+    e = list_front (&ready_list);
+    ready = list_entry (e, struct thread, elem);
+    if (cur->priority < ready->priority)
+    {
+      thread_yield ();
+    }
+  }
+}
+
 /* Invoke function 'func' on all threads, passing along 'aux'.
    This function must be called with interrupts off. */
 void
@@ -392,9 +416,9 @@ thread_set_priority (int new_priority)
     thread_set_priority_if_donated ();
   }
 
+  thread_preemption ();
   intr_set_level (old_level);
  
-  thread_yield ();
 }
 
 /* Restore the current thread's original priority, not donated one. */
@@ -406,8 +430,11 @@ thread_set_priority_properly (void)
 
   old_level = intr_disable ();
 
-  cur->priority = cur->priority_mine;
-  cur->priority_mine = 0;
+  if (cur->priority_mine != 0)
+  {
+    cur->priority = cur->priority_mine;
+    cur->priority_mine = 0;
+  }
   thread_set_priority_if_donated ();
 
   intr_set_level (old_level);

@@ -132,11 +132,13 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
+void thread_preemption (void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
+void thrad_donate_priority (void);
 int thread_get_priority (void);
 void thread_set_priority (int);
 void thread_set_priority_properly (void);
