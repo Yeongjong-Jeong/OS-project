@@ -168,6 +168,9 @@ timer_print_stats (void)
 }
 
 /* Timer interrupt handler. */
+/* Checks whether there're threads to be awaken
+ * by checking minimum tick value which are early saved
+ * when updating the sleeping threads */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
@@ -175,10 +178,11 @@ timer_interrupt (struct intr_frame *args UNUSED)
   ticks++;
   thread_tick ();
 
+  /* Checks whether there's a thread to be awaken */
   if (min_local_tick <= ticks)
   {
-    thread_awake (ticks);
-    update_min_tick_sleeplist ();
+    thread_awake (ticks); /* If so, awake threads*/
+    update_min_tick_sleeplist (); /* Updates the minimum tick value */
   }
 }
 

@@ -119,7 +119,7 @@ sema_up (struct semaphore *sema)
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) 
   {
-    list_sort (&sema->waiters, cmp_priority_elem, NULL); /* ? */
+    list_sort (&sema->waiters, cmp_priority_elem, NULL);
     thread_unblock (list_entry (list_pop_front (&sema->waiters),
                                 struct thread, elem));
   }
@@ -268,23 +268,15 @@ lock_release (struct lock *lock)
   old_level = intr_disable ();
 
   /* remove lock waiter from the donation list */
-  /* make as function! */
   is_nested_donated = thread_clean_donation_list (lock);
 
-  /*
-  lock->holder = NULL;
-  sema_up (&lock->semaphore);
-  */
-
   /* set priority properly
-   * with regarding the nested priority and the donation list */
+     regarding the nested priority and the donation list */
   if (!is_nested_donated)
     thread_set_priority_properly ();
 
   lock->holder = NULL;
   sema_up (&lock->semaphore);
-  /* Priority Preemption */
-  /* thread_preemption (); */
 
   intr_set_level (old_level);
 }
@@ -410,22 +402,6 @@ cmp_priority_sema (const struct list_elem *a,
   if (list_empty (x_waiters))
     return false;
 
-  /*
-  list_sort (x_waiters, cmp_priority_elem, NULL);
-  list_sort (y_waiters, cmp_priority_elem, NULL);
-  */
-
   return cmp_priority_elem (list_front (x_waiters),
                             list_front (y_waiters), NULL);
-  /*
-  ex = list_front (x_waiters);
-  ey = list_front (y_waiters);
-  tx = list_entry (ex, struct thread, elem);
-  ty = list_entry (ey, struct thread, elem);
-
-  if (tx->priority >= ty->priority)
-    return true;
-  else
-    return false;
-  */
 }

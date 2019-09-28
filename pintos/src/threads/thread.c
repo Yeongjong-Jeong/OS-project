@@ -24,7 +24,9 @@
    that are ready to run but not actually running. */
 static struct list ready_list;
 
-/* List of processes in waiting for timer expiration */
+/* List of processes which are waiting for timer expiration.
+   Processes are added to this list when they are called to sleep
+   and removed when the timer for which they are waiting expired. */
 static struct list sleep_list;
 
 /* List of all processes.  Processes are added to this list
@@ -57,7 +59,9 @@ static long long user_ticks;    /* # of timer ticks in user programs. */
 #define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 
-static int64_t min_tick_sleeplist = 0;  /* The minimum tick in the sleep list. */
+/* Timer */
+/* The minimum tick in the sleep list. */
+static int64_t min_tick_sleeplist = 0;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
@@ -75,6 +79,12 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+/* Priority Donation */
+static void thread_set_priority_donation (struct thread*);
+static void thread_set_priority_nested_donation (struct thread*,
+                                                 struct list_elem*, int);
+static void thread_set_priority_if_donated (void);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -96,7 +106,7 @@ thread_init (void)
 
   lock_init (&tid_lock);
   list_init (&ready_list);
-  list_init (&sleep_list);
+  list_init (&sleep_list); /* added for sleep/wakeup feature */
   list_init (&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -335,8 +345,10 @@ thread_yield (void)
 }
 
 /* Priority Preemption
- * If the priority of the current thread is less than
- * that of the thread in the ready list, the current thread gives the control up. */
+   If the priority of the current thread is less than
+   that of the thread in the ready list,
+   the current thread gives up the control.
+   This function must be called with interrupts off. */
 void
 thread_preemption (void)
 {
@@ -352,9 +364,7 @@ thread_preemption (void)
     e = list_front (&ready_list);
     ready = list_entry (e, struct thread, elem);
     if (cur->priority < ready->priority)
-    {
       thread_yield ();
-    }
   }
 }
 
@@ -382,6 +392,8 @@ thread_get_priority (void)
   return thread_current ()->priority;
 }
 
+/* Donates the current thread's priority to the lock holder.
+   This function must be called with interrupts off. */
 void
 thread_donate_priority (void)
 {
@@ -395,9 +407,9 @@ thread_donate_priority (void)
   ASSERT (!lock_held_by_current_thread (lock));
   ASSERT (intr_get_level () == INTR_OFF);
 
-  /* From the donation list of the donation receiving thread,
-       * removes the donated thread which waits for the same lock if exists
-       * , because it has smaller priority than the curren thread. */ 
+  /* From the donation list of the donation-receiving thread,
+     removes the donated thread which waits for the same lock if exists
+     , because it has smaller priority than the current thread. */
   for (e = list_begin (&lock_holder->donations);
        e != list_end (&lock_holder->donations); e = list_next (e))
   {
@@ -407,8 +419,8 @@ thread_donate_priority (void)
       list_remove (e);
       break;
       /* Because this "break" operation
-       * , there's only one thread waiting for the same lock
-       * , so we don't need to traverse further. */
+         , there's only one thread waiting for the same lock
+         , so we don't need to traverse further. */
     }
   }
 
@@ -421,7 +433,10 @@ thread_donate_priority (void)
   thread_set_priority_donation (lock_holder);
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* Sets the current thread's priority to NEW_PRIORITY.
+   If the current thread received priority donation from other threads,
+   then select the priority properly between the newly edited priority
+   and donated priorities in the current thread's donation list. */
 void
 thread_set_priority (int new_priority) 
 {
@@ -434,9 +449,13 @@ thread_set_priority (int new_priority)
   ASSERT (PRI_MIN <= new_priority && new_priority <= PRI_MAX);
 
   old_level = intr_disable ();
-  
+
+  /* Changes the current thread's priority to the new one. */
   cur->priority = new_priority;
-  
+
+  /* If the current threads received the priority donation,
+     eliminates the donator whose priority is less than or equal to
+     the current thread's newly edited priority. */
   if (!list_empty (&cur->donations))
   {
     e = list_rbegin (&cur->donations);
@@ -452,15 +471,20 @@ thread_set_priority (int new_priority)
       else
         break;
     }
+    /* Sets the current thread's priority regarding the donation list */
     thread_set_priority_if_donated ();
   }
 
+  /* If there's a thread which has higher priority than the current thread
+     in the READY_STATE, then yields the CPU.  */
   thread_preemption ();
   intr_set_level (old_level);
- 
 }
 
-/* Restore the current thread's original priority, not donated one. */
+/* Returns to the current thread's original priority if there's no donator.
+   If there's donator, sets the current thread's priority
+   to the highest priority of the donator.
+   This function is called when the current thread releases a lock. */
 void
 thread_set_priority_properly (void)
 {
@@ -474,16 +498,20 @@ thread_set_priority_properly (void)
     cur->priority = cur->priority_mine;
     cur->priority_mine = -1;
   }
+
+  /* If there's donator, sets the current thread's priority
+     to the highest priority of the donator. */
   thread_set_priority_if_donated ();
 
   intr_set_level (old_level);
 }
 
 /* Checks whether the current thread received priority donations
- * from the other higher-priority threads or not,
- * then if yes, set the priority of the current thread to 
- * the priority of the hightest donated thread. */
-void
+   from the other higher-priority threads or not.
+   And then if yes, set the priority of the current thread to
+   the highest priority of the donator.
+   This function must be called with interrupts off. */
+static void
 thread_set_priority_if_donated (void)
 {
   struct thread* donator = NULL;
@@ -500,11 +528,11 @@ thread_set_priority_if_donated (void)
   }
 }
 
-/* Set the donation received thread's priority 
- * to the donated priority.
- * Therefore, this function should be called only
- * when donation should be occured in the function LOCK_ACQUIRE. */
-void
+/* Set priority of the thread which received donation.
+   Therefore, this function should be called only
+   when donation occurs in the function LOCK_ACQUIRE.
+   This function must be called with interrupts off. */
+static void
 thread_set_priority_donation (struct thread* receiver)
 {
   int new_priority;
@@ -518,50 +546,62 @@ thread_set_priority_donation (struct thread* receiver)
                         struct thread, donated_elem);
   new_priority = donator->priority;
 
+  /* To the thread which received donation,
+     if it's the first time to receive the donation,
+     saves its original priority */
   if (receiver->priority_mine == -1)
     receiver->priority_mine = receiver->priority;
   receiver->priority = new_priority;
 
   /* nested donation */
-  if (receiver->wait_on_lock != NULL && receiver->wait_on_lock->holder != NULL) 
-    thread_set_priority_nested_donation (receiver, 
-                                         &donator->donated_elem, new_priority);
-
+  if (receiver->wait_on_lock != NULL
+        && receiver->wait_on_lock->holder != NULL)
+    thread_set_priority_nested_donation (receiver,
+                                         &donator->donated_elem,
+                                         new_priority);
 }
 
-void
+/* Nested Donation: sets the priority of the threads which hold the lock
+   for which the current thread's lock holder is waiting. */
+static void
 thread_set_priority_nested_donation (struct thread* receiver,
-                                     struct list_elem* donated_elem, int new_priority)
+                                     struct list_elem* donated_elem,
+                                     int new_priority)
 {
   struct thread* lock_holder = NULL;
 
   ASSERT (intr_get_level () == INTR_OFF);
   ASSERT (is_thread (receiver));
   ASSERT (donated_elem != NULL);
-  ASSERT (receiver->wait_on_lock != NULL && receiver->wait_on_lock->holder != NULL);
+  ASSERT (receiver->wait_on_lock != NULL &&
+          receiver->wait_on_lock->holder != NULL);
   ASSERT (PRI_MIN <= new_priority && new_priority <= PRI_MAX);
 
+  /* Here, LOCK_HOLDER is not the lock holder of the current thread.
+     This LOCK_HOLDER is the threads which hold the lock
+     for which the current thread's lock holder is waiting.*/
   lock_holder = receiver->wait_on_lock->holder;
   if (lock_holder->priority < new_priority)
   {
     /* There can be a situation which the lock holder thread
-     * already received donation, and the donated priority is less than 
-     * the current new priority. */
+       already received donation, and the donated priority is less than
+       the current new priority. */
     if (lock_holder->priority_mine == -1)
       lock_holder->priority_mine = lock_holder->priority;
     lock_holder->priority = new_priority;
-    /* list_insert_ordered (&lock_holder->donations, donated_elem,
-                         cmp_priority_donated_elem, NULL); */
 
+    /* Recursively donates the priority for the nested donation. */
     if (lock_holder->wait_on_lock != NULL &&
         lock_holder->wait_on_lock->holder != NULL)
-      thread_set_priority_nested_donation (lock_holder, donated_elem, new_priority);
+      thread_set_priority_nested_donation (lock_holder, donated_elem,
+                                           new_priority);
   }
   /* If the lock holder has higher priority than the waiting thread,
-   * the waiting thread should not donate its relatively low priority. */
+     the waiting thread should not donate its relatively low priority. */
 }
 
-/* Sets the current thread's */
+/* Sets the current thread's WAIT_ON_LOCK value
+   to point the lock for which the current thread is waiting */
 void
 thread_set_wait_on_lock (struct lock* lock)
 {
@@ -575,6 +615,7 @@ thread_set_wait_on_lock (struct lock* lock)
   intr_set_level (old_level);
 }
 
+/* Sets the current thread's WAIT_ON_LOCK value not to point any lock. */
 void
 thread_clear_wait_on_lock (void)
 {
@@ -586,12 +627,18 @@ thread_clear_wait_on_lock (void)
   intr_set_level (old_level);
 }
 
+/* This function is called when the current thread release a lock.
+   Removes the donator which is waiting for the lock
+   just released by the current thread from the donation list.
+   Returns the integer value 1 or 0
+   which indicates the current thread received priority in nested way or not.
+   This function must be called with interrupts off. */
 int
 thread_clean_donation_list (struct lock *lock)
 {
   struct thread *cur = thread_current ();
   struct thread *t = NULL;
-  struct thread *dt = NULL; /* highest donator */
+  struct thread *dt = NULL; /* pointer to the highest donator */
   struct list_elem *e = NULL;
   struct list_elem *de = NULL; /* highest donator's DONATED_ELEM */
   struct list *donation_list = NULL;
@@ -601,6 +648,7 @@ thread_clean_donation_list (struct lock *lock)
   ASSERT (intr_get_level () == INTR_OFF);
   
   donation_list = &cur->donations;
+  /* Finds the donator which is waiting for the lock */
   if (!list_empty (donation_list))
   {
     for (e = list_begin (donation_list); e != list_end (donation_list);
@@ -609,6 +657,7 @@ thread_clean_donation_list (struct lock *lock)
       t = list_entry (e, struct thread, donated_elem);
       if (t->wait_on_lock == lock)
       {
+        /* Removes the donator from the current thread's donation list. */
         list_remove (e);
 
         /* There can be a nested donator */
@@ -622,8 +671,8 @@ thread_clean_donation_list (struct lock *lock)
         }
         return 0;
         /* Breaks because donator could donate only
-         * when it has the higher prioirty than other
-         * , and also the lower one are kicked out when higher one comes in. */
+         * when it has the higher priority than other,
+         *  and also the lower one are kicked out when higher one comes in. */
       }
     }
   
@@ -749,7 +798,8 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
   t->wakeup_tick = 0;
-  t->priority_mine = -1; /* -1 means t->priority is mine. */
+  t->priority_mine = -1;
+  /* -1 means PRIORITY is mine. hasn't received donation */
   t->wait_on_lock = NULL;
   list_init (&t->donations);
 }
@@ -885,8 +935,8 @@ thread_sleep(int64_t ticks)
     cur->status = THREAD_BLOCKED;
     cur->wakeup_tick = ticks;
 
-		/* Resets the minimum tick value in sleep queue
-			* if it's minimum tick */
+    /* Resets the minimum tick value in sleep queue
+       if the current thread's timer-expiring tick is the minimum tick */
     if (ticks < min_tick_sleeplist)
       min_tick_sleeplist = ticks;
 
@@ -896,7 +946,8 @@ thread_sleep(int64_t ticks)
   intr_set_level (old_level);
 }
 
-/* Finds all threads to wake up, and awakes it/them. */
+/* Finds all threads to wake up, and awakes it/them.
+   This function must be called with interrupts off. */
 void
 thread_awake (int64_t ticks)
 {
@@ -933,7 +984,8 @@ thread_awake (int64_t ticks)
 }
 
 /* Returns the minimum tick in the sleep queue.
- * Minimum tick value "min_tick_sleep" is static global. */
+   Minimum tick value "min_tick_sleep" is static global.
+   This function must be called with interrupts off. */
 int64_t
 get_min_tick_sleeplist (void)
 {
@@ -942,7 +994,8 @@ get_min_tick_sleeplist (void)
   return min_tick_sleeplist;
 }
 
-/* Updates the minimum tick in the sleep queue. */
+/* Updates the minimum tick in the sleep queue.
+   This function must be called with interrupts off. */
 int64_t
 update_min_tick_sleeplist (void)
 {
@@ -951,7 +1004,7 @@ update_min_tick_sleeplist (void)
 
   ASSERT (intr_get_level () == INTR_OFF);
 
-  /* sleep list is sorted by expired time
+  /* sleep list is sorted by expiring time
    * in non-increasing order */
   min_e = list_begin (&sleep_list);
   min_t = list_entry (min_e, struct thread, elem);
