@@ -25,6 +25,11 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* Thread nicenesses. */
+#define NICE_MIN -20
+#define NICE_DEFAULT 0
+#define NICE_MAX 20
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -101,6 +106,10 @@ struct thread
     struct list donations;              /* The donation list. */
     struct list_elem donated_elem;      /* List element for donation list. */
 
+    /* for MLQF Scheduler */
+    int nice;
+    int recent_cpu;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -157,6 +166,12 @@ void thread_sleep (int64_t ticks);
 void thread_awake (int64_t ticks);
 int64_t get_min_tick_sleeplist (void);
 int64_t update_min_tick_sleeplist (void);
+
+/* Advanced Scheduler. */
+void recalculate_load_avg (void);
+void recalculate_recent_cpu_and_priority (void);
+void recalculate_current_thread_recent_cpu (void);
+void recalculate_current_thread_priority (void);
 
 /* Compare-operator functions b/w two LIST_ELEM */
 list_less_func cmp_tick;

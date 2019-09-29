@@ -203,26 +203,25 @@ lock_init (struct lock *lock)
 void
 lock_acquire (struct lock *lock)
 {
-  struct thread *lock_holder = NULL;
   enum intr_level old_level;
 
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
-  lock_holder = lock->holder;
-
   old_level = intr_disable ();
 
+  /* If the advanced scheduler is used, forbid the priority donation. */
   /* If the lock is not available */
-  if (lock->holder != NULL)
+  if (!thread_mlfqs && lock->holder != NULL)
   {
+
     /* Stores address of the lock */
     thread_set_wait_on_lock (lock);
 
     /* If the priority of the thread which has lock
      * is less than that of the current thread, donates priority. */
-    if (lock_holder->priority < thread_get_priority ())
+    if (lock->holder->priority < thread_get_priority ())
       thread_donate_priority ();
   }
 
@@ -267,12 +266,15 @@ lock_release (struct lock *lock)
 
   old_level = intr_disable ();
 
+  /* If the advanced scheduler is used, forbid the priority donation. */
   /* remove lock waiter from the donation list */
-  is_nested_donated = thread_clean_donation_list (lock);
+  if (!thread_mlfqs)
+    is_nested_donated = thread_clean_donation_list (lock);
 
+  /* If the advanced scheduler is used, forbid the priority donation. */
   /* set priority properly
      regarding the nested priority and the donation list */
-  if (!is_nested_donated)
+  if (!thread_mlfqs && !is_nested_donated)
     thread_set_priority_properly ();
 
   lock->holder = NULL;

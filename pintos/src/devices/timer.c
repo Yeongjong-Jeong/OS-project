@@ -184,6 +184,27 @@ timer_interrupt (struct intr_frame *args UNUSED)
     thread_awake (ticks); /* If so, awake threads*/
     update_min_tick_sleeplist (); /* Updates the minimum tick value */
   }
+
+  if (thread_mlfqs)
+  {
+    /* Recalculates RECENT_CPU of the current thread
+       every time a timer intterupt occurs. */
+    recalculate_current_thread_recent_cpu ();
+
+    /* Recalculates LOAD_AVG, RECENT_CPU of all threads every 1 sec. */
+    if (timer_ticks () % TIMER_FREQ == 0)
+    {
+      recalculate_load_avg ();
+      recalculate_recent_cpu_and_priority ();
+    }
+
+    /* Recalculates priority of the current thread every 4 ticks. */
+    if (timer_ticks () % 4 == 0)
+    {
+      recalculate_current_thread_priority ();
+    }
+  }
+
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

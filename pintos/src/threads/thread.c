@@ -11,6 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "threads/fixedpoint.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -19,6 +20,9 @@
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
+
+/* The initial value of the system load average. */
+#define DEFAULT_LOAD_AVG 0
 
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
@@ -63,10 +67,12 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 /* The minimum tick in the sleep list. */
 static int64_t min_tick_sleeplist = 0;
 
+/* Advanced Scheduler, */
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
+static int load_avg;            /* The system load average. */
 
 static void kernel_thread (thread_func *, void *aux);
 
@@ -108,6 +114,7 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&sleep_list); /* added for sleep/wakeup feature */
   list_init (&all_list);
+  load_avg = DEFAULT_LOAD_AVG; /* initializes the system load average. */
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -447,10 +454,14 @@ thread_set_priority (int new_priority)
   enum intr_level old_level;
 
   ASSERT (PRI_MIN <= new_priority && new_priority <= PRI_MAX);
+  
+  /* If the advanced scheduler is used, diable the priority setting. */
+  if (thread_mlfqs)
+    return ;
 
   old_level = intr_disable ();
 
-  /* Changes the current thread's priority to the new one. */
+    /* Changes the current thread's priority to the new one. */
   cur->priority = new_priority;
 
   /* If the current threads received the priority donation,
@@ -682,33 +693,52 @@ thread_clean_donation_list (struct lock *lock)
 
 /* Sets the current thread's nice value to NICE. */
 void
-thread_set_nice (int nice UNUSED) 
+thread_set_nice (int nice) 
 {
-  /* Not yet implemented. */
+  enum intr_level old_level;
+
+  old_level = intr_disable ();
+  
+  /* Rolls back the nice value if the value is saturated. */
+  if (nice>NICE_MAX)
+    nice = NICE_MAX;
+  else if (nice<NICE_MIN)
+    nice = NICE_MIN;
+
+  thread_current ()->nice = nice;
+
+  /* Recalculate the thread's priority. */
+  recalculate_current_thread_priority ();
+  
+  /* If the current thread no longer has the highest priority, yield. */
+  thread_preemption ();
+
+  intr_set_level (old_level);
 }
 
 /* Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return thread_current ()->nice;
 }
 
 /* Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  int temp = mul_fi (load_avg, 100);
+  temp = f_to_i_rounding_toward_nearest (temp);
+  return temp;
 }
 
 /* Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  int temp = mul_fi (thread_current ()->recent_cpu, 100);
+  temp = f_to_i_rounding_toward_nearest (temp);
+  return temp;
 }
 
 /* Idle thread.  Executes when no other thread is ready to run.
@@ -802,6 +832,21 @@ init_thread (struct thread *t, const char *name, int priority)
   /* -1 means PRIORITY is mine. hasn't received donation */
   t->wait_on_lock = NULL;
   list_init (&t->donations);
+  t->nice = NICE_DEFAULT;  /* Default = 0 */
+  t->recent_cpu = 0;
+  if (thread_mlfqs)
+  {
+    if (t == initial_thread)
+    {
+      t->nice = NICE_DEFAULT;
+      t->recent_cpu = 0;
+    }
+    else
+    {
+      t->nice = thread_current ()->nice;
+      t->recent_cpu = thread_current ()->recent_cpu;
+    }
+  }
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -1012,6 +1057,103 @@ update_min_tick_sleeplist (void)
   min_tick_sleeplist = min_t->wakeup_tick;
 
   return min_tick_sleeplist;
+}
+
+/* Advanced Scheduler. */
+/* Recalculates the system load average for every 1 second. */
+void
+recalculate_load_avg (void)
+{
+  int coeff1, coeff2;
+  int num_ready_threads;
+
+  coeff1 = div_fi (i_to_f (59), 60);
+  num_ready_threads = list_size (&ready_list);
+  if (thread_current () != idle_thread)
+    num_ready_threads++;
+  coeff2 = div_fi (i_to_f (num_ready_threads), 60);
+
+  load_avg = mul_ff (coeff1, load_avg);
+  load_avg = add_ff (load_avg, coeff2);
+}
+
+/* Advanced Scheduler. */
+/* Recalculates the recent_cpu of all threads,
+   and the priority of all threads except the current thread
+   for every one second. */
+void
+recalculate_recent_cpu_and_priority (void)
+{
+  int coeff1, coeff2, temp_recent_cpu, temp_priority;
+  enum intr_level old_level;
+  struct list_elem *e = NULL;
+  struct thread *t = NULL;
+  struct thread *cur = thread_current ();
+  
+  old_level = intr_disable ();
+  coeff1 = mul_fi (load_avg, 2);
+  coeff2 = add_fi (coeff1, 1);
+  coeff1 = div_ff (coeff1, coeff2);
+
+  for (e=list_begin (&all_list); e!=list_end (&all_list); e = list_next (e))
+  {
+    t = list_entry (e, struct thread, allelem);
+    temp_recent_cpu = mul_ff (t->recent_cpu, coeff1) + t->nice;
+    t->recent_cpu = temp_recent_cpu;
+    if (t != cur) /* recent_cpu also? */
+    {
+      coeff2 = div_fi (temp_recent_cpu, 4);
+      coeff2 = f_to_i_rounding_toward_nearest (coeff2);
+      temp_priority = PRI_MAX - coeff2 - (t->nice * 2);
+      
+      if (temp_priority < PRI_MIN)
+        temp_priority = PRI_MIN;
+      else if (temp_priority > PRI_MAX)
+        temp_priority = PRI_MAX;
+      
+      t->priority = temp_priority;
+    }
+  }
+  intr_set_level (old_level);
+}
+
+/* Advanced Scheduler. */
+/* Recalculates the RECENT_CPU of the current thread
+ * for every time a timer interrupt occurs. */
+void
+recalculate_current_thread_recent_cpu (void)
+{
+  enum intr_level old_level;
+  struct thread *cur = thread_current ();
+
+  old_level = intr_disable ();
+  if (cur != idle_thread) 
+    cur->recent_cpu = add_fi (cur->recent_cpu, 1);
+  intr_set_level (old_level);
+}
+
+/* Advanced Scheduler. */
+/* Recalculates the priority of the current thread for every 4 ticks. */
+void
+recalculate_current_thread_priority (void)
+{
+  int coeff, temp_priority;
+  enum intr_level old_level;
+  struct thread *cur = thread_current ();
+
+  old_level = intr_disable ();
+  coeff = div_fi (cur->recent_cpu, 4);
+  coeff = f_to_i_rounding_toward_nearest (coeff);
+  temp_priority = PRI_MAX - coeff - (cur->nice * 2);
+
+  if (temp_priority < PRI_MIN)
+    temp_priority = PRI_MIN;
+  else if (temp_priority > PRI_MAX)
+    temp_priority = PRI_MAX;
+  
+  cur->priority = temp_priority;
+  
+  intr_set_level (old_level); 
 }
 
 /* Compares the local tick values of two LIST_ELEM in sleep queue.
