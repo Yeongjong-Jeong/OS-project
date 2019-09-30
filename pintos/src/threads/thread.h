@@ -25,6 +25,12 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* The initial value of the system load average. */
+#define LOAD_AVG_DEFAULT 0
+
+/* The RECENT_CPU value of the initial thread. */
+#define RECENT_CPU_DEFAULT 0
+
 /* Thread nicenesses. */
 #define NICE_MIN -20
 #define NICE_DEFAULT 0
@@ -95,14 +101,14 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     int64_t wakeup_tick;                /* Local timer tick. */
-    struct list_elem allelem;           /* List element for all threads list. */
+    struct list_elem allelem;         /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
     /* for priority donation */
     int priority_mine;                  /* Original priority when donated. */
-    struct lock *wait_on_lock;          /* Pointer to lock it owns. */
+    struct lock *wait_on_lock;          /* Pointer to lock it owns/waits. */
     struct list donations;              /* The donation list. */
     struct list_elem donated_elem;      /* List element for donation list. */
 
@@ -154,7 +160,7 @@ void thread_set_priority (int);
 void thread_set_priority_properly (void);
 void thread_set_wait_on_lock (struct lock*);
 void thread_clear_wait_on_lock (void);
-int thread_clean_donation_list (struct lock *);
+bool thread_clean_donation_list (struct lock *);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
@@ -168,6 +174,7 @@ int64_t get_min_tick_sleeplist (void);
 int64_t update_min_tick_sleeplist (void);
 
 /* Advanced Scheduler. */
+void thread_roundrobin (void);
 void recalculate_load_avg (void);
 void recalculate_recent_cpu_and_priority (void);
 void recalculate_current_thread_recent_cpu (void);

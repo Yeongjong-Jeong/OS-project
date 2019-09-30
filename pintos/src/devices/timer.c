@@ -176,7 +176,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   int64_t min_local_tick = get_min_tick_sleeplist ();
   ticks++;
-  thread_tick ();
+  /* thread_tick (); */
 
   /* Checks whether there's a thread to be awaken */
   if (min_local_tick <= ticks)
@@ -203,7 +203,11 @@ timer_interrupt (struct intr_frame *args UNUSED)
     {
       recalculate_current_thread_priority ();
     }
+    /* Round Robin */
+    thread_roundrobin ();
   }
+  else
+    thread_tick ();
 
 }
 

@@ -21,9 +21,6 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
-/* The initial value of the system load average. */
-#define DEFAULT_LOAD_AVG 0
-
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
@@ -114,7 +111,7 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&sleep_list); /* added for sleep/wakeup feature */
   list_init (&all_list);
-  load_avg = DEFAULT_LOAD_AVG; /* initializes the system load average. */
+  load_avg = LOAD_AVG_DEFAULT; /* initializes the system load average. */
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -431,10 +428,13 @@ thread_donate_priority (void)
     }
   }
 
-  /* Puts the current thread's D_ELEM in the donation list. */
-  list_insert_ordered (&lock_holder->donations,
-                       &thread_current ()->donated_elem,
-                       cmp_priority_donated_elem, NULL);
+  /* Puts the current thread's D_ELEM in the front of the donation list.
+     Doesn't need to use LIST_INSERT_ORDERED,
+     because the current thread is certified 
+     as the highest priority thread 
+     among the donator threads of lock holder. */
+  list_push_front (&lock_holder->donations, 
+                   &thread_current ()->donated_elem);
 
   /* Priority Donation */
   thread_set_priority_donation (lock_holder);
@@ -641,10 +641,10 @@ thread_clear_wait_on_lock (void)
 /* This function is called when the current thread release a lock.
    Removes the donator which is waiting for the lock
    just released by the current thread from the donation list.
-   Returns the integer value 1 or 0
+   Returns the boolean value true or false
    which indicates the current thread received priority in nested way or not.
    This function must be called with interrupts off. */
-int
+bool
 thread_clean_donation_list (struct lock *lock)
 {
   struct thread *cur = thread_current ();
@@ -678,9 +678,9 @@ thread_clean_donation_list (struct lock *lock)
           dt = list_entry (de, struct thread, donated_elem);
           
           if (dt->priority != cur->priority)
-            return 1; /* nested donation */
+            return true; /* nested donation */
         }
-        return 0;
+        return false;
         /* Breaks because donator could donate only
          * when it has the higher priority than other,
          *  and also the lower one are kicked out when higher one comes in. */
@@ -688,29 +688,60 @@ thread_clean_donation_list (struct lock *lock)
     }
   
   }
-  return 0;
+  return false;
 }
 
-/* Sets the current thread's nice value to NICE. */
+/* MLFQS
+   This function is called by TIMER_INTERRUPT() when using MLFQS.
+   Yield the CPU, if the priority of the current thread is less than
+   that of the thread in the ready queue
+   or if the current thread has used all TIME_SLICE,
+   and there's the thread who has the same priority in the ready queue. */
+void
+thread_roundrobin (void)
+{
+  struct thread *cur = thread_current ();
+  struct thread *t = NULL;
+  struct list_elem *e = NULL;
+  
+  ASSERT (intr_context ());
+
+  if (!list_empty (&ready_list))
+  {
+    e = list_front (&ready_list);
+    t = list_entry (e, struct thread, elem);
+
+    if (cur->priority < t->priority)
+      intr_yield_on_return ();
+    if ((++thread_ticks >= TIME_SLICE)
+        && (cur->priority == t->priority))
+      intr_yield_on_return ();
+  }
+}
+
+/* Sets the current thread's nice value to NICE.
+   Recalculate the thread's priority.
+   If the current thread no longer has the highest priority, 
+   yield the CPU. */
 void
 thread_set_nice (int nice) 
 {
   enum intr_level old_level;
 
-  old_level = intr_disable ();
-  
   /* Rolls back the nice value if the value is saturated. */
   if (nice>NICE_MAX)
     nice = NICE_MAX;
   else if (nice<NICE_MIN)
     nice = NICE_MIN;
 
+  old_level = intr_disable ();
   thread_current ()->nice = nice;
 
   /* Recalculate the thread's priority. */
   recalculate_current_thread_priority ();
   
-  /* If the current thread no longer has the highest priority, yield. */
+  /* If the current thread no longer has the highest priority,
+     yield the CPU. */
   thread_preemption ();
 
   intr_set_level (old_level);
@@ -723,7 +754,8 @@ thread_get_nice (void)
   return thread_current ()->nice;
 }
 
-/* Returns 100 times the system load average. */
+/* Returns 100 times the system load average
+   , rounded to the nearest integer. */
 int
 thread_get_load_avg (void) 
 {
@@ -732,7 +764,8 @@ thread_get_load_avg (void)
   return temp;
 }
 
-/* Returns 100 times the current thread's recent_cpu value. */
+/* Returns 100 times the current thread's recent_cpu value
+   , rounded to the nearest integer. */
 int
 thread_get_recent_cpu (void) 
 {
@@ -833,14 +866,16 @@ init_thread (struct thread *t, const char *name, int priority)
   t->wait_on_lock = NULL;
   list_init (&t->donations);
   t->nice = NICE_DEFAULT;  /* Default = 0 */
-  t->recent_cpu = 0;
-  if (thread_mlfqs)
+  t->recent_cpu = RECENT_CPU_DEFAULT;
+  if (thread_mlfqs) /* If OS is using the MLFQ scheduler */
   {
     if (t == initial_thread)
     {
       t->nice = NICE_DEFAULT;
-      t->recent_cpu = 0;
+      t->recent_cpu = RECENT_CPU_DEFAULT;
     }
+    /* Unless the thread is initial thread,
+       inherits the NICE, RECENT_CPU from the parent thread. */
     else
     {
       t->nice = thread_current ()->nice;
@@ -1064,17 +1099,19 @@ update_min_tick_sleeplist (void)
 void
 recalculate_load_avg (void)
 {
-  int coeff1, coeff2;
+  int t1, t2;
   int num_ready_threads;
 
-  coeff1 = div_fi (i_to_f (59), 60);
+  ASSERT (intr_context ());
+
+  t1 = div_fi (i_to_f (59), 60);
   num_ready_threads = list_size (&ready_list);
   if (thread_current () != idle_thread)
     num_ready_threads++;
-  coeff2 = div_fi (i_to_f (num_ready_threads), 60);
+  t2 = div_fi (i_to_f (num_ready_threads), 60);
 
-  load_avg = mul_ff (coeff1, load_avg);
-  load_avg = add_ff (load_avg, coeff2);
+  t1 = mul_ff (t1, load_avg);
+  load_avg = add_ff (t1, t2);
 }
 
 /* Advanced Scheduler. */
@@ -1084,27 +1121,30 @@ recalculate_load_avg (void)
 void
 recalculate_recent_cpu_and_priority (void)
 {
-  int coeff1, coeff2, temp_recent_cpu, temp_priority;
+  int t1, t2, temp_recent_cpu, temp_priority;
   enum intr_level old_level;
   struct list_elem *e = NULL;
   struct thread *t = NULL;
   struct thread *cur = thread_current ();
+
+  ASSERT (intr_context ());
   
   old_level = intr_disable ();
-  coeff1 = mul_fi (load_avg, 2);
-  coeff2 = add_fi (coeff1, 1);
-  coeff1 = div_ff (coeff1, coeff2);
+  t1 = mul_fi (load_avg, 2);
+  t2 = add_fi (t1, 1);
+  t1 = div_ff (t1, t2);
 
   for (e=list_begin (&all_list); e!=list_end (&all_list); e = list_next (e))
   {
     t = list_entry (e, struct thread, allelem);
-    temp_recent_cpu = mul_ff (t->recent_cpu, coeff1) + t->nice;
+    t2 = mul_ff (t->recent_cpu, t1);
+    temp_recent_cpu = add_fi (t2, t->nice);
     t->recent_cpu = temp_recent_cpu;
-    if (t != cur) /* recent_cpu also? */
+    if (t != cur)
     {
-      coeff2 = div_fi (temp_recent_cpu, 4);
-      coeff2 = f_to_i_rounding_toward_nearest (coeff2);
-      temp_priority = PRI_MAX - coeff2 - (t->nice * 2);
+      t2 = div_fi (temp_recent_cpu, 4);
+      t2 = f_to_i_rounding_toward_nearest (t2);
+      temp_priority = PRI_MAX - t2 - (t->nice * 2);
       
       if (temp_priority < PRI_MIN)
         temp_priority = PRI_MIN;
@@ -1114,6 +1154,7 @@ recalculate_recent_cpu_and_priority (void)
       t->priority = temp_priority;
     }
   }
+  list_sort (&ready_list, cmp_priority_elem, NULL);
   intr_set_level (old_level);
 }
 
@@ -1125,6 +1166,8 @@ recalculate_current_thread_recent_cpu (void)
 {
   enum intr_level old_level;
   struct thread *cur = thread_current ();
+
+  ASSERT (intr_context ());
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
@@ -1143,8 +1186,9 @@ recalculate_current_thread_priority (void)
 
   old_level = intr_disable ();
   coeff = div_fi (cur->recent_cpu, 4);
+  coeff = add_fi (coeff, cur->nice * 2);
   coeff = f_to_i_rounding_toward_nearest (coeff);
-  temp_priority = PRI_MAX - coeff - (cur->nice * 2);
+  temp_priority = PRI_MAX - coeff;
 
   if (temp_priority < PRI_MIN)
     temp_priority = PRI_MIN;
