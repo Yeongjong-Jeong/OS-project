@@ -32,9 +32,9 @@ typedef int tid_t;
 #define RECENT_CPU_DEFAULT 0
 
 /* Thread nicenesses. */
-#define NICE_MIN -20
-#define NICE_DEFAULT 0
-#define NICE_MAX 20
+#define NICE_MIN -20                    /* Lowest niceness. */
+#define NICE_DEFAULT 0                  /* Default niceness. */
+#define NICE_MAX 20                     /* Highest niceness.  */
 
 /* A kernel thread or user process.
 
@@ -113,8 +113,8 @@ struct thread
     struct list_elem donated_elem;      /* List element for donation list. */
 
     /* for MLQF Scheduler */
-    int nice;
-    int recent_cpu;
+    int nice;                           /* Niceness. */
+    int recent_cpu;                     /* Recent CPU usage. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */

@@ -125,7 +125,10 @@ sema_up (struct semaphore *sema)
   }
   sema->value++;
 
-  /* Priority Preemption */
+  /* Priority Preemption.
+     When a thread releases a lock, 
+     there can be a thread which waits for the same lock, 
+     but has higher priority than the lock-releasing thread. */
   thread_preemption ();
 
   intr_set_level (old_level);
@@ -211,12 +214,13 @@ lock_acquire (struct lock *lock)
 
   old_level = intr_disable ();
 
-  /* If the advanced scheduler is used, forbid the priority donation. */
-  /* If the lock is not available */
+  /* When the advanced scheduler is used, 
+     the priority donation is forbidden.
+     If the lock is not available */
   if (!thread_mlfqs && lock->holder != NULL)
   {
-
-    /* Stores address of the lock */
+    /* Stores address of the lock to the member variable WAIT_ON_LOCK
+       of the current thread structure. */
     thread_set_wait_on_lock (lock);
 
     /* If the priority of the thread which has lock
@@ -266,14 +270,16 @@ lock_release (struct lock *lock)
 
   old_level = intr_disable ();
 
-  /* If the advanced scheduler is used, forbid the priority donation. */
-  /* remove lock waiter from the donation list */
+  /* When the advanced scheduler is used,
+     the priority donation is forbidden. */
+  /* Removes the lock waiter from the current thread's donation list */
   if (!thread_mlfqs)
     is_nested_donated = thread_clean_donation_list (lock);
 
-  /* If the advanced scheduler is used, forbid the priority donation. */
-  /* set priority properly
-     regarding the nested priority and the donation list */
+  /* When the advanced scheduler is used,
+     the priority donation is forbidden. */
+  /* Sets the current thread's priority properly
+     regarding the nested donation and the direct donation. */
   if (!thread_mlfqs && !is_nested_donated)
     thread_set_priority_properly ();
 
@@ -343,6 +349,10 @@ cond_wait (struct condition *cond, struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
   
   sema_init (&waiter.semaphore, 0);
+  /* Inserts the waiter for the condition variable
+     to the list WAITERS of the condition variable, 
+     in order of the highest priority of the threads 
+     in WAITERS list of each semaphore non-increasingly. */
   list_insert_ordered (&cond->waiters, &waiter.elem,
                        cmp_priority_sema, NULL);
   lock_release (lock);
@@ -367,6 +377,9 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
 
   if (!list_empty (&cond->waiters)) 
   {
+    /* Sorts the list WAITERS of the condition variable, 
+     in order of the highest priority of the threads 
+     in WAITERS list of each semaphore non-increasingly. */
     list_sort (&cond->waiters, cmp_priority_sema, NULL);
     sema_up (&list_entry (list_pop_front (&cond->waiters),
                           struct semaphore_elem, elem)->semaphore);
@@ -389,6 +402,10 @@ cond_broadcast (struct condition *cond, struct lock *lock)
     cond_signal (cond, lock);
 }
 
+/* Compares the values of the priority of two SEMAPHORE
+   in list WAITERS of some condition variable.
+   Return true if the priority of SEMAPHORE_ELEM A is greater than or equal
+   to that of SEMAPHORE_ELEM B, otherwise return false. */
 static bool
 cmp_priority_sema (const struct list_elem *a,
                    const struct list_elem *b, void* aux UNUSED)

@@ -62,7 +62,7 @@ static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 
 /* Timer */
 /* The minimum tick in the sleep list. */
-static int64_t min_tick_sleeplist = 0;
+static int64_t min_tick_sleeplist;
 
 /* Advanced Scheduler, */
 /* If false (default), use round-robin scheduler.
@@ -111,6 +111,7 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&sleep_list); /* added for sleep/wakeup feature */
   list_init (&all_list);
+  min_tick_sleeplist = -1; /* -1 means there's no thread waiting for timer. */
   load_avg = LOAD_AVG_DEFAULT; /* initializes the system load average. */
 
   /* Set up a thread structure for the running thread. */
@@ -348,7 +349,7 @@ thread_yield (void)
   intr_set_level (old_level);
 }
 
-/* Priority Preemption
+/* Priority Preemption.
    If the priority of the current thread is less than
    that of the thread in the ready list,
    the current thread gives up the control.
@@ -682,8 +683,8 @@ thread_clean_donation_list (struct lock *lock)
         }
         return false;
         /* Breaks because donator could donate only
-         * when it has the higher priority than other,
-         *  and also the lower one are kicked out when higher one comes in. */
+           when it has the higher priority than other,
+           and also the lower one are kicked out when higher one comes in. */
       }
     }
   
@@ -720,9 +721,9 @@ thread_roundrobin (void)
 }
 
 /* Sets the current thread's nice value to NICE.
-   Recalculate the thread's priority.
+   Recalculates the thread's priority.
    If the current thread no longer has the highest priority, 
-   yield the CPU. */
+   yields the CPU. */
 void
 thread_set_nice (int nice) 
 {
@@ -737,11 +738,11 @@ thread_set_nice (int nice)
   old_level = intr_disable ();
   thread_current ()->nice = nice;
 
-  /* Recalculate the thread's priority. */
+  /* Recalculates the thread's priority. */
   recalculate_current_thread_priority ();
   
   /* If the current thread no longer has the highest priority,
-     yield the CPU. */
+     yields the CPU. */
   thread_preemption ();
 
   intr_set_level (old_level);
@@ -865,9 +866,7 @@ init_thread (struct thread *t, const char *name, int priority)
   /* -1 means PRIORITY is mine. hasn't received donation */
   t->wait_on_lock = NULL;
   list_init (&t->donations);
-  t->nice = NICE_DEFAULT;  /* Default = 0 */
-  t->recent_cpu = RECENT_CPU_DEFAULT;
-  if (thread_mlfqs) /* If OS is using the MLFQ scheduler */
+  if (thread_mlfqs) /* MLFQ SCHEDULER. */
   {
     if (t == initial_thread)
     {
@@ -881,6 +880,11 @@ init_thread (struct thread *t, const char *name, int priority)
       t->nice = thread_current ()->nice;
       t->recent_cpu = thread_current ()->recent_cpu;
     }
+  }
+  else /* PRIORITY SCHEDULER. */
+  {
+    t->nice = NICE_DEFAULT;  /* Default = 0 */
+    t->recent_cpu = RECENT_CPU_DEFAULT;
   }
 }
 
@@ -998,8 +1002,8 @@ allocate_tid (void)
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
 
-/* Change the state of the caller thread to 'BLOCKED' and
- * put it to the sleep queue 'sleep_list' */
+/* Changes the state of the caller thread to 'BLOCKED' and
+   puts it to the sleep queue 'SLEEP_LIST'. */
 void
 thread_sleep(int64_t ticks)
 {
@@ -1015,18 +1019,20 @@ thread_sleep(int64_t ticks)
     cur->status = THREAD_BLOCKED;
     cur->wakeup_tick = ticks;
 
+    list_insert_ordered (&sleep_list, &cur->elem, cmp_tick, NULL);
+
     /* Resets the minimum tick value in sleep queue
-       if the current thread's timer-expiring tick is the minimum tick */
-    if (ticks < min_tick_sleeplist)
+       if the minimum tick value in sleep queue is not setted 
+       or the current thread's timer-expiring tick is the minimum tick */
+    if (min_tick_sleeplist < 0 || ticks < min_tick_sleeplist)
       min_tick_sleeplist = ticks;
 
-    list_insert_ordered (&sleep_list, &cur->elem, cmp_tick, NULL);
   }
   schedule ();
   intr_set_level (old_level);
 }
 
-/* Finds all threads to wake up, and awakes it/them.
+/* Finds all threads to be awaken, and awakes it/them.
    This function must be called with interrupts off. */
 void
 thread_awake (int64_t ticks)
@@ -1049,9 +1055,11 @@ thread_awake (int64_t ticks)
       t = list_entry (e, struct thread, elem);
       if (t->wakeup_tick <= ticks)
         {
+          /* Removes the thread from the sleep queue. */
           d = e;
           e = list_next(e);
           list_remove (d);
+          /* Inserts the thread to the ready queue. */
           t->status = THREAD_READY;
           list_insert_ordered (&ready_list, &t->elem,
                              cmp_priority_elem, NULL);
@@ -1084,12 +1092,16 @@ update_min_tick_sleeplist (void)
 
   ASSERT (intr_get_level () == INTR_OFF);
 
-  /* sleep list is sorted by expiring time
-   * in non-increasing order */
-  min_e = list_begin (&sleep_list);
-  min_t = list_entry (min_e, struct thread, elem);
-
-  min_tick_sleeplist = min_t->wakeup_tick;
+  /* sleep list is sorted by expiring timer tick
+     in non-increasing order */
+  if (!list_empty (&sleep_list))
+  {
+    min_e = list_begin (&sleep_list);
+    min_t = list_entry (min_e, struct thread, elem);
+    min_tick_sleeplist = min_t->wakeup_tick;
+  }
+  else
+    min_tick_sleeplist = -1; /* There's no thread waiting for the alarm. */
 
   return min_tick_sleeplist;
 }
@@ -1160,7 +1172,7 @@ recalculate_recent_cpu_and_priority (void)
 
 /* Advanced Scheduler. */
 /* Recalculates the RECENT_CPU of the current thread
- * for every time a timer interrupt occurs. */
+   for every time a timer interrupt occurs. */
 void
 recalculate_current_thread_recent_cpu (void)
 {
@@ -1201,8 +1213,8 @@ recalculate_current_thread_priority (void)
 }
 
 /* Compares the local tick values of two LIST_ELEM in sleep queue.
- * Returns true if the tick value of A is less than that of B,
- * return false oterwise. */
+   It returns true if the tick value of A is less than that of B,
+   returns false oterwise. */
 bool
 cmp_tick (const struct list_elem *a, const struct list_elem *b,
           void* aux UNUSED)
@@ -1216,8 +1228,8 @@ cmp_tick (const struct list_elem *a, const struct list_elem *b,
 }
 
 /* Compares the values of the priority of two LIST_ELEM in READY_LIST.
- * Return true if the priority of A is greater than or equal to that of B
- * , otherwise return false. */
+   It returns true if the priority of A is greater than or equal to that of B
+   , otherwise returns false. */
 bool
 cmp_priority_elem (const struct list_elem *a,
                    const struct list_elem *b, void* aux UNUSED)
@@ -1231,8 +1243,8 @@ cmp_priority_elem (const struct list_elem *a,
 }
 
 /* Compares the values of the priority of two D_ELEM in donation list.
- * Return true if the priority of A is greater than or equal to that of B
- * , otherwise return false. */
+   It returns true if the priority of A is greater than or equal to that of B
+   , otherwise returns false. */
 bool
 cmp_priority_donated_elem (const struct list_elem *a,
                            const struct list_elem *b, void* aux UNUSED)
