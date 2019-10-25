@@ -20,6 +20,8 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static int count_argc (char*);
+static void set_up_stack_intr_frame (int, char*, char*, void **);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -28,7 +30,7 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
+  char *fn_copy, *thread_name, *save_ptr;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -38,8 +40,13 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  /* Parse a command-line string
+     which is composed of a file_name and arguments for running the file.
+     And from above, get program name. */
+  thread_name = strtok_r (file_name, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (thread_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -51,21 +58,36 @@ static void
 start_process (void *file_name_)
 {
   char *file_name = file_name_;
+  char duplicate_file_name[strlen (file_name) + 1];
+  char *thread_name, *save_ptr;
   struct intr_frame if_;
   bool success;
+  int argc;
+
+  /* Parse the command-line string. */
+  strlcpy (duplicate_file_name, file_name, sizeof (duplicate_file_name));
+  argc = count_argc (duplicate_file_name);
+  thread_name = strtok_r (duplicate_file_name, " ", &save_ptr);
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (thread_name, &if_.eip, &if_.esp);
+  /* if success, stack for the interrupt frame is allocated, 
+     so if_.esp points to the stack of the interrupt frame. */
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
 
+  /* Set up stack - push the command-line arguments into user stack. */
+  argc = count_argc (save_ptr) + 1;
+  set_up_stack_intr_frame (argc, thread_name, save_ptr, &if_.esp);
+
+  hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -130,6 +152,85 @@ process_activate (void)
   /* Set thread's kernel stack for use in processing
      interrupts. */
   tss_update ();
+}
+
+/**/
+int count_argc (char *arg)
+{
+  int count = 0;
+  char *pos = arg;
+  while ((arg = strchr (arg, ' ')) != NULL)
+  {
+    /* when multiple spaces ' ' appears sequentially */
+    if (pos == arg)
+    {
+      arg++;
+      pos = arg;
+    }
+    else
+    {
+      count++;
+      arg++;
+      pos = arg;
+    }
+    
+    /* when the string ends with space ' '. */
+    if (*arg == '\0')
+      count--;
+  }
+  count++;
+
+  return count;
+}
+
+/**/
+void
+set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpointer)
+{
+  int size_token, padding;
+  int total_input_size = 0;
+  char *token, *save_ptr;
+  void *argv[argc+1];
+  int i = 0;
+
+  argv[i] = (void*)file_name;
+  i++;
+  for (token = strtok_r (args, " ", &save_ptr); token != NULL;
+       token = strtok_r (NULL, " ", &save_ptr))
+  {
+    argv[i] = (void*)token;
+    i++;
+  }
+
+  for (i=argc-1; i>=0; i--)
+  {
+    size_token = strlen ((char*)argv[i]) + 1;
+    total_input_size += size_token;
+
+    *(char**)stackpointer -= size_token;
+    argv[i] = memcpy (*stackpointer, argv[i], size_token);
+  }
+  /* argv[argc] = 0 */
+  argv[argc] = (void*)0;
+
+  padding = (total_input_size % 4) ? 4 - (total_input_size % 4) : 0;
+  *(char**)stackpointer -= padding;
+  memset (*stackpointer, 0, (size_t)padding);
+
+  /* argv[argc] ~ argv[0] */
+  for (i=argc; i>=0; i--)
+  {
+    *(char**)stackpointer -= sizeof(char*);
+    memcpy (*stackpointer, &argv[i], sizeof(void*));    
+  }
+
+  argv[0] = *stackpointer;
+  *(char**)stackpointer -= sizeof(char**);
+  memcpy (*stackpointer, &argv[0], sizeof(char**));
+  *(char**)stackpointer -= sizeof(int);
+  memcpy (*stackpointer, &argc, sizeof(int));
+  *(char**)stackpointer -= sizeof(void*);
+  memset (*stackpointer, 0, sizeof(void*));
 }
 
 /* We load ELF binaries.  The following definitions are taken
