@@ -4,7 +4,6 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-#include "threads/synch.h" /* added */
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -24,17 +23,6 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
-
-/* The initial value of the system load average. */
-#define LOAD_AVG_DEFAULT 0
-
-/* The RECENT_CPU value of the initial thread. */
-#define RECENT_CPU_DEFAULT 0
-
-/* Thread nicenesses. */
-#define NICE_MIN -20                    /* Lowest niceness. */
-#define NICE_DEFAULT 0                  /* Default niceness. */
-#define NICE_MAX 20                     /* Highest niceness.  */
 
 /* A kernel thread or user process.
 
@@ -100,21 +88,10 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
-    int64_t wakeup_tick;                /* Local timer tick. */
-    struct list_elem allelem;         /* List element for all threads list. */
+    struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
-
-    /* for priority donation */
-    int priority_mine;                  /* Original priority when donated. */
-    struct lock *wait_on_lock;          /* Pointer to lock it owns/waits. */
-    struct list donations;              /* The donation list. */
-    struct list_elem donated_elem;      /* List element for donation list. */
-
-    /* for MLQF Scheduler */
-    int nice;                           /* Niceness. */
-    int recent_cpu;                     /* Recent CPU usage. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -148,40 +125,17 @@ const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
 void thread_yield (void);
-void thread_preemption (void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
-void thread_donate_priority (void);
 int thread_get_priority (void);
 void thread_set_priority (int);
-void thread_set_priority_properly (void);
-void thread_set_wait_on_lock (struct lock*);
-void thread_clear_wait_on_lock (void);
-bool thread_clean_donation_list (struct lock *);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
-/* Timer related functions */
-void thread_sleep (int64_t ticks);
-void thread_awake (int64_t ticks);
-int64_t get_min_tick_sleeplist (void);
-int64_t update_min_tick_sleeplist (void);
-
-/* Advanced Scheduler. */
-void thread_roundrobin (void);
-void recalculate_load_avg (void);
-void recalculate_recent_cpu_and_priority (void);
-void recalculate_current_thread_recent_cpu (void);
-void recalculate_current_thread_priority (void);
-
-/* Compare-operator functions b/w two LIST_ELEM */
-list_less_func cmp_tick;
-list_less_func cmp_priority_elem;
-list_less_func cmp_priority_donated_elem;
 #endif /* threads/thread.h */

@@ -92,9 +92,8 @@ timer_sleep (int64_t ticks)
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
-
-  if (timer_elapsed (start) < ticks) 
-    thread_sleep (start + ticks);
+  while (timer_elapsed (start) < ticks) 
+    thread_yield ();
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -168,50 +167,11 @@ timer_print_stats (void)
 }
 
 /* Timer interrupt handler. */
-/* Checks whether there're threads to be awaken
- * by checking minimum tick value which are early saved
- * when updating the sleeping threads */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
-  /* Get the minimum value of the timer tick from the sleep queue. */
-  int64_t min_local_tick = get_min_tick_sleeplist ();
   ticks++;
-
-  /* Checks whether there's a thread to be awaken */
-  /* Negative MIN_LOCAL_TICK means there's no thread waiting for alarm. */
-  if (min_local_tick >= 0 && min_local_tick <= ticks)
-  {
-    thread_awake (ticks); /* If so, awake threads. */
-    update_min_tick_sleeplist (); /* Updates the minimum tick value. */
-  }
-
-  /* If the MLFQ scheduler is used, */
-  if (thread_mlfqs)
-  {
-    /* Recalculates RECENT_CPU of the current thread
-       every time a timer intterupt occurs. */
-    recalculate_current_thread_recent_cpu ();
-
-    /* Recalculates LOAD_AVG and RECENT_CPU of all threads every 1 sec. */
-    /* Recalculates PRIORITY of all threads
-       except the running thread for every 1 second. */
-    if (timer_ticks () % TIMER_FREQ == 0)
-    {
-      recalculate_load_avg ();
-      recalculate_recent_cpu_and_priority ();
-    }
-
-    /* Recalculates priority of the current thread every 4 ticks. */
-    if (timer_ticks () % 4 == 0)
-    {
-      recalculate_current_thread_priority ();
-    }
-    /* Round Robin */
-    thread_roundrobin ();
-  }
-  else
-    thread_tick (); /* PRIORITY SCHEDULER. */
+  thread_tick ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
