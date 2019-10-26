@@ -30,8 +30,10 @@ static void set_up_stack_intr_frame (int, char*, char*, void **);
 tid_t
 process_execute (const char *file_name) 
 {
+  struct thread *cur, *child;
   char *fn_copy, *thread_name, *save_ptr;
   char _file_name[strlen(file_name)+1];
+  enum intr_level old_level;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -49,8 +51,34 @@ process_execute (const char *file_name)
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (thread_name, PRI_DEFAULT, start_process, fn_copy);
+
+  /* Fail to create a process. */
   if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+    palloc_free_page (fn_copy);
+  /* Parent process should wait until it knows the child process has 
+     successfully created and the binary file is successfully loaded. */
+  else
+  {
+    cur = thread_current ();
+
+    // printf("Parent: Waits until child is completely loaded\n");
+    sema_down (&cur->sema_exec);
+    // printf("Parent: Waits ends\n");
+
+    child = thread_find_tid (tid);
+
+    ASSERT (child != NULL);
+
+    /* Fail to load the program. */
+    if (child->load_status == 0)
+    {
+      thread_deallocate_child_process (child);
+      return -1;
+    }
+    else
+      list_push_back (&cur->child_list, &child->child_elem);
+  }
+
   return tid;
 }
 
@@ -79,6 +107,13 @@ start_process (void *file_name_)
   success = load (thread_name, &if_.eip, &if_.esp);
   /* if success, stack for the interrupt frame is allocated, 
      so if_.esp points to the stack of the interrupt frame. */
+
+  if (success)
+    thread_current ()->load_status = 1;
+
+  /* Child process is completely loaded. */
+  // printf ("Child: Completely loaded\n");
+  sema_up (&thread_current ()->parent->sema_exec);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -113,7 +148,42 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  return -1;
+  struct thread *child;
+  enum intr_level old_level;
+  int child_exit_status;
+
+  /* Validates the process id of the child process
+     which the current process is waing for. */
+  if (child = validate_child_pid (child_tid))
+    return -1;
+
+  /* The process has already called wait on the child. */
+  if (child->sema_wait.value == 0)
+    return -1;
+  
+  /* If the child process is not terminated, wait. */
+  if (child->status != THREAD_CHILD_WAIT)
+    sema_down (&child->sema_wait);
+  
+  /* The child process can already be terminated
+     before call process_wait (),
+     so remove it from the children list and deallocates it. */
+  old_level = intr_disable ();
+  list_remove (&child->child_elem);
+  intr_set_level (old_level);
+
+  child_exit_status = child->exit_status;
+
+  /* Deallocates the descriptor of the child process. */
+  ASSERT (child != thread_current ());
+  palloc_free_page (child);
+
+  /* The child process has terminated by the kernel. */
+  /* if (child_exit_status == -2) initailly set to -2.
+    return -1;
+    */
+  return child_exit_status;
+
 }
 
 /* Free the current process's resources. */

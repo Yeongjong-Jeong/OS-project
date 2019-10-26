@@ -71,6 +71,10 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+#ifdef USERPROG
+static void free_children (void);
+#endif
+
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -288,20 +292,46 @@ thread_tid (void)
 void
 thread_exit (void) 
 {
+  struct thread *cur = thread_current ();
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
   process_exit ();
-#endif
-
+  
+  /* parent still alive */
+  if (cur->parent != NULL)
+  {
+    cur->status = THREAD_CHILD_WAIT;
+    /* Prevents scheduling before the child completely terminates */
+    intr_disable ();
+    /* parent is waiting for me being exited. */
+    if (cur->sema_wait.value != 0)
+      sema_up (&thread_current ()->sema_wait);
+    /* child process should not  */
+  }
+  /* Remove thread from all threads list, set our status to dying,
+     and schedule another process.  That process will destroy us
+     when it calls thread_schedule_tail(). */
+  else
+  {
+    intr_disable ();
+    list_remove (&cur->allelem);
+    cur->status = THREAD_DYING;
+  }
+  /* makes the child processes not to point the current process. */
+  free_children (); 
+  schedule ();
+  NOT_REACHED ();
+#else
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
   intr_disable ();
-  list_remove (&thread_current()->allelem);
-  thread_current ()->status = THREAD_DYING;
+  list_remove (&cur->allelem);
+  cur->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
+#endif
 }
 
 /* Yields the CPU.  The current thread is not put to sleep and
@@ -383,6 +413,69 @@ thread_get_recent_cpu (void)
   /* Not yet implemented. */
   return 0;
 }
+
+#ifdef USERPROG
+/* Validates the tid of the child process.
+   If the tid is the tid of one of the child process of the current process,
+   return the pointer to the child process whose tid is TID.
+   Oterwise, return NULL pointer. */
+struct thread *
+validate_child_pid (tid_t tid)
+{
+  struct thread *cur = thread_current ();
+  struct thread *t;
+  struct list_elem *e;
+
+  for (e = list_begin (&cur->child_list);
+       e != list_end (&cur->child_list); e = list_next (e))  
+  {
+    t = list_entry (e, struct thread, child_elem);
+    if (t->tid == tid)
+      return t;
+  }
+  return NULL;
+  
+}
+
+/*  */
+struct thread *
+thread_find_tid (tid_t tid)
+{
+  struct thread *t;
+  struct list_elem *e;
+
+  for (e = list_begin (&all_list); e != list_end (&all_list);
+       e = list_next (e))
+  {
+    t = list_entry (e, struct thread, allelem);
+    if (t->tid == tid)
+      return t;
+  }
+  return NULL;
+}
+
+/*  */
+void thread_deallocate_child_process (struct thread* child)
+{
+  ASSERT (is_thread (child));
+  ASSERT (child != thread_current ());
+
+  palloc_free_page (child);
+}
+
+static void free_children (void)
+{
+  struct thread *cur = running_thread ();
+  struct thread *t;
+  struct list_elem *e;
+  for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list)
+      ; e = list_next (e))
+  {
+    t = list_entry (e, struct thread, child_elem);
+    t->parent = NULL;
+  }
+}
+#endif
 
 /* Idle thread.  Executes when no other thread is ready to run.
 
@@ -470,6 +563,18 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
   list_push_back (&all_list, &t->allelem);
+
+#ifdef USERPROG
+  t->exit_status = 0;
+  t->load_status = 0;
+  t->parent = running_thread (); /* thread_current ()? */
+  list_init (&t->child_list);
+  sema_init (&t->sema_wait, 0);
+  sema_init (&t->sema_exec, 0);
+  /* thread_current ()? */
+  /* sorted linked list - sorted from oldest to youngest. */
+  list_push_back (&(running_thread ()->child_list), &t->child_elem);
+#endif
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and

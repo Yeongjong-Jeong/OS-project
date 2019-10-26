@@ -1,3 +1,5 @@
+#include "threads/synch.h"
+
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
@@ -11,7 +13,8 @@ enum thread_status
     THREAD_RUNNING,     /* Running thread. */
     THREAD_READY,       /* Not running but ready to run. */
     THREAD_BLOCKED,     /* Waiting for an event to trigger. */
-    THREAD_DYING        /* About to be destroyed. */
+    THREAD_DYING,       /* About to be destroyed. */
+    THREAD_CHILD_WAIT   /* Waiting for the parent which is waiting for. */
   };
 
 /* Thread identifier type.
@@ -96,6 +99,13 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    int exit_status; /* a field to denote the exit status */
+    int load_status; /* whether the file is successfully loaded or not. */
+    struct thread *parent;              /* Pointer to parent process. */
+    struct list child_list;          /* List of child processes. */
+    struct list_elem child_elem;          /* Children list element. */
+    struct semaphore sema_wait;         /* Semaphore for wait. */
+    struct semaphore sema_exec;         /* Semaphore for execute. */
 #endif
 
     /* Owned by thread.c. */
@@ -138,4 +148,10 @@ void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
+
+struct thread *validate_child_pid (tid_t);
+struct thread *thread_find_tid (tid_t);
+/*
+void thread_deallocate_child_process (struct thread*);
+*/
 #endif /* threads/thread.h */

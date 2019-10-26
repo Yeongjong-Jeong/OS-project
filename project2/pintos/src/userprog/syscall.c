@@ -130,7 +130,7 @@ void exit (int status)
 {
   struct thread* cur = thread_current ();
   /* Save exit status at process descriptor. */
-  // cur->exit_status = status;
+  cur->exit_status = status;
 
   /* print message "Name of process: exit(status)". */
   printf ("%s: exit(%d)\n", cur->name, status);
@@ -150,6 +150,27 @@ int wait (pid_t pid)
   return process_wait (pid);
 }
 
+bool create (const char *file, unsigned initial_size)
+{
+  return false;
+}
+
+bool remove (const char *file)
+{
+  return false;
+}
+
+int open (const char *file)
+{
+  return -1;
+}
+
+int filesize (int fd)
+{
+  return -1;
+}
+
+
 int read (int fd, void* buffer, unsigned size)
 {
   return 0;
@@ -166,6 +187,22 @@ int write (int fd, const void *buffer, unsigned size)
   // else - file_write
   return -1;
 }
+
+void seek (int fd, unsigned position)
+{
+  return ;
+}
+
+unsigned tell (int fd)
+{
+  return 0;
+}
+
+void close (int fd)
+{
+  return ;
+}
+
 
 static void check_user_pointer (const void* uaddr)
 {
@@ -189,7 +226,7 @@ static void copy_args (void* user_stack, int *args, int arg_num)
     uaddr += (1 + i);
     check_user_pointer ((void*)uaddr);
     memcpy (args+i, uaddr, sizeof(int));
-    // printf ("Copy arguments: %d", args[i]);
+    printf ("Copy arguments: %d\n", args[i]);
   }
 
 }
