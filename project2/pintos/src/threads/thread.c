@@ -302,8 +302,13 @@ thread_exit (void)
   if (cur->parent != NULL)
   {
     cur->status = THREAD_CHILD_WAIT;
+
     /* Prevents scheduling before the child completely terminates */
     intr_disable ();
+
+    /* free the kernel memory of the file descriptor table. */
+    /* palloc_free_page (cur->fdt); */
+
     /* parent is waiting for me being exited. */
     if (cur->sema_wait.value != 0)
       sema_up (&thread_current ()->sema_wait);
@@ -555,6 +560,7 @@ init_thread (struct thread *t, const char *name, int priority)
   ASSERT (t != NULL);
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
   ASSERT (name != NULL);
+  int i;
 
   memset (t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
@@ -574,6 +580,14 @@ init_thread (struct thread *t, const char *name, int priority)
   /* thread_current ()? */
   /* sorted linked list - sorted from oldest to youngest. */
   list_push_back (&(running_thread ()->child_list), &t->child_elem);
+  for (i = 0; i < FDT_SIZE; i++)
+    t->fdt[i] = NULL;
+  /*
+  t->fdt = palloc_get_page(PAL_ZERO);
+  memset (t->fdt, 0, (sizeof *t)*64);
+  if (t->fdt == NULL)
+    thread_exit ();
+    */
 #endif
 }
 

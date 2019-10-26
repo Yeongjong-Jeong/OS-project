@@ -124,7 +124,7 @@ start_process (void *file_name_)
   argc = count_argc (save_ptr) + 1;
   set_up_stack_intr_frame (argc, thread_name, save_ptr, &if_.esp);
 
-  hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+  // hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -154,7 +154,8 @@ process_wait (tid_t child_tid UNUSED)
 
   /* Validates the process id of the child process
      which the current process is waing for. */
-  if (child = validate_child_pid (child_tid))
+  child = validate_child_pid (child_tid);
+  if (child == NULL)
     return -1;
 
   /* The process has already called wait on the child. */

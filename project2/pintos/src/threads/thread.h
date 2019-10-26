@@ -27,6 +27,9 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* File Descriptor Table */
+#define FDT_SIZE 64                      /* fixed size 64 */
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -102,10 +105,12 @@ struct thread
     int exit_status; /* a field to denote the exit status */
     int load_status; /* whether the file is successfully loaded or not. */
     struct thread *parent;              /* Pointer to parent process. */
-    struct list child_list;          /* List of child processes. */
-    struct list_elem child_elem;          /* Children list element. */
+    struct list child_list;             /* List of child processes. */
+    struct list_elem child_elem;        /* Children list element. */
     struct semaphore sema_wait;         /* Semaphore for wait. */
     struct semaphore sema_exec;         /* Semaphore for execute. */
+    struct file *fdt[FDT_SIZE];         /* file descriptor table */
+    /*struct file **fdt;*/                 
 #endif
 
     /* Owned by thread.c. */
@@ -151,7 +156,5 @@ int thread_get_load_avg (void);
 
 struct thread *validate_child_pid (tid_t);
 struct thread *thread_find_tid (tid_t);
-/*
 void thread_deallocate_child_process (struct thread*);
-*/
 #endif /* threads/thread.h */
