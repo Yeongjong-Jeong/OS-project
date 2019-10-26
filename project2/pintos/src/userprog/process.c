@@ -31,6 +31,7 @@ tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy, *thread_name, *save_ptr;
+  char _file_name[strlen(file_name)+1];
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -39,11 +40,12 @@ process_execute (const char *file_name)
   if (fn_copy == NULL)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (_file_name, file_name, sizeof(_file_name));
 
   /* Parse a command-line string
      which is composed of a file_name and arguments for running the file.
      And from above, get program name. */
-  thread_name = strtok_r (file_name, " ", &save_ptr);
+  thread_name = strtok_r (_file_name, " ", &save_ptr);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (thread_name, PRI_DEFAULT, start_process, fn_copy);
@@ -88,6 +90,7 @@ start_process (void *file_name_)
   set_up_stack_intr_frame (argc, thread_name, save_ptr, &if_.esp);
 
   hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
