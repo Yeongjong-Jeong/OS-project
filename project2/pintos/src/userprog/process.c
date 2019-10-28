@@ -61,9 +61,9 @@ process_execute (const char *file_name)
   {
     cur = thread_current ();
 
-    // printf("Parent: Waits until child is completely loaded\n");
+		old_level = intr_disable ();
     sema_down (&cur->sema_exec);
-    // printf("Parent: Waits ends\n");
+		intr_set_level (old_level);
 
     child = thread_find_tid (tid);
 
@@ -75,8 +75,6 @@ process_execute (const char *file_name)
       thread_deallocate_child_process (child);
       return -1;
     }
-    else
-      list_push_back (&cur->child_list, &child->child_elem);
   }
 
   return tid;
@@ -108,11 +106,11 @@ start_process (void *file_name_)
   /* if success, stack for the interrupt frame is allocated, 
      so if_.esp points to the stack of the interrupt frame. */
 
+	/* Successfully loaded. */
   if (success)
     thread_current ()->load_status = 1;
 
   /* Child process is completely loaded. */
-  // printf ("Child: Completely loaded\n");
   sema_up (&thread_current ()->parent->sema_exec);
 
   /* If load failed, quit. */
@@ -121,10 +119,15 @@ start_process (void *file_name_)
     thread_exit ();
 
   /* Set up stack - push the command-line arguments into user stack. */
-  argc = count_argc (save_ptr) + 1;
-  set_up_stack_intr_frame (argc, thread_name, save_ptr, &if_.esp);
-
-  // hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+	if (strlen(save_ptr) == 0)
+	{
+		set_up_stack_intr_frame (argc, thread_name, NULL, &if_.esp);
+	}
+	else
+	{
+  	argc = count_argc (save_ptr) + 1;
+  	set_up_stack_intr_frame (argc, thread_name, save_ptr, &if_.esp);
+	}
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -158,33 +161,26 @@ process_wait (tid_t child_tid UNUSED)
   if (child == NULL)
     return -1;
 
-  /* The process has already called wait on the child. */
-  if (child->sema_wait.value == 0)
-    return -1;
-  
   /* If the child process is not terminated, wait. */
   if (child->status != THREAD_CHILD_WAIT)
-    sema_down (&child->sema_wait);
-  
+	{
+	 sema_down (&child->sema_wait);
+	}
   /* The child process can already be terminated
      before call process_wait (),
      so remove it from the children list and deallocates it. */
   old_level = intr_disable ();
   list_remove (&child->child_elem);
+	list_remove (&child->allelem);
   intr_set_level (old_level);
 
   child_exit_status = child->exit_status;
 
   /* Deallocates the descriptor of the child process. */
-  ASSERT (child != thread_current ());
+  // ASSERT (child != thread_current ());
   palloc_free_page (child);
 
-  /* The child process has terminated by the kernel. */
-  /* if (child_exit_status == -2) initailly set to -2.
-    return -1;
-    */
   return child_exit_status;
-
 }
 
 /* Free the current process's resources. */
@@ -194,6 +190,7 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
+	// printf("process_exit: entered\n");
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
@@ -210,6 +207,13 @@ process_exit (void)
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
+
+	if (cur->opened_file != NULL)
+	{
+		file_allow_write (cur->opened_file);
+  	file_close (cur->opened_file);
+	}
+	// printf("process_exit: pass\n");
 }
 
 /* Sets up the CPU for running user code in the current
@@ -263,22 +267,32 @@ set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpoin
 {
   int size_token, padding;
   int total_input_size = 0;
-  char *token, *save_ptr;
+  char *token, *save_ptr = NULL;
   void *argv[argc+1];
   int i = 0;
 
   argv[i] = (void*)file_name;
   i++;
-  for (token = strtok_r (args, " ", &save_ptr); token != NULL;
-       token = strtok_r (NULL, " ", &save_ptr))
-  {
-    argv[i] = (void*)token;
-    i++;
-  }
+	if (args == NULL)
+		i--;
+	else
+	{
+  	for (token = strtok_r (args, " ", &save_ptr); token != NULL;
+    	   token = strtok_r (NULL, " ", &save_ptr))
+  	{
+    	argv[i] = (void*)token;
+    	i++;
+ 	 	}
+	}
 
   for (i=argc-1; i>=0; i--)
   {
     size_token = strlen ((char*)argv[i]) + 1;
+    if (size_token == 1)
+    {
+      argc--;
+      continue;
+    }
     total_input_size += size_token;
 
     *(char**)stackpointer -= size_token;
@@ -386,6 +400,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
   struct file *file = NULL;
+	enum intr_level old_level;
   off_t file_ofs;
   bool success = false;
   int i;
@@ -402,7 +417,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
-    }
+    }	
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -482,8 +497,15 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
-
-  success = true;
+	
+	/* Prevent modifying data of the opened file. */
+	old_level = intr_disable ();
+	t->opened_file = file;
+	file_deny_write (file);	
+	intr_set_level (old_level);
+  
+	success = true;
+	return success;
 
  done:
   /* We arrive here whether the load is successful or not. */

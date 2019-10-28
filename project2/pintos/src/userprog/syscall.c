@@ -1,5 +1,6 @@
 #include "userprog/syscall.h"
 #include "userprog/process.h"
+#include "userprog/pagedir.h"
 #include "lib/user/syscall.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,12 +15,13 @@
 #include "filesys/file.h"
 
 #define USER_VADDR_LOW_BOUND ((void*) 0x08048000)
-#define SUCCESS 0
-#define FAILURE 1
+#define FAILURE -1
 
 static void syscall_handler (struct intr_frame *);
+static void check_user_address (void* uaddr);
+static void check_user_buffer (void* buffer, unsigned size);
+static void* uaddr_to_kaddr (void* uaddr);
 static void copy_args (void* user_stack, int *args, int arg_num);
-static void copy_args_write (void* user_stack, int *args, int arg_num);
 static int fdt_insert (struct file *);
 static struct file *fdt_find (int fd);
 static void fdt_remove (int fd);
@@ -27,6 +29,7 @@ static void fdt_remove (int fd);
 void
 syscall_init (void)
 {
+	lock_init (&filesys_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
 
@@ -54,8 +57,7 @@ syscall_handler (struct intr_frame *f UNUSED)
     }
     case SYS_EXIT:                   /* Terminate this process. */
     {
-      /* check validation of pointer to user stack
-       * and other pointers on arguments */
+			/* copy arguments. */
       copy_args (f->esp, args, 1);
       exit (args[0]);
       break;
@@ -63,7 +65,7 @@ syscall_handler (struct intr_frame *f UNUSED)
     case SYS_EXEC:                   /* Start another process. */
     {
       copy_args (f->esp, args, 1);
-      exec ((const char*)args[0]);
+      f->eax = exec ((const char*)args[0]);
       break;
     }
     case SYS_WAIT:                   /* Wait for a child process to die. */
@@ -104,7 +106,7 @@ syscall_handler (struct intr_frame *f UNUSED)
     }
     case SYS_WRITE:                  /* Write to a file. */
     {
-      copy_args_write (f->esp, args, 3);
+      copy_args (f->esp, args, 3);
       f->eax = write (args[0], (void*)args[1], (unsigned)args[2]);
       break;
     }
@@ -136,17 +138,22 @@ syscall_handler (struct intr_frame *f UNUSED)
 
 
 /* Shutdown pintos. */
-void halt (void)
+void
+halt (void)
 {
   shutdown_power_off ();
 }
 
 /* Exit the current process. */
-void exit (int status)
+void
+exit (int status)
 {
   struct thread* cur = thread_current ();
+	enum intr_level old_level = intr_disable ();
+
   /* Save exit status at process descriptor. */
   cur->exit_status = status;
+	intr_set_level (old_level);
 
   /* print message "Name of process: exit(status)". */
   printf ("%s: exit(%d)\n", cur->name, status);
@@ -154,118 +161,219 @@ void exit (int status)
 }
 
 /* Create child process and execute program corresponds to CMD_LINE. */
-pid_t exec (const char *cmd_line)
+pid_t
+exec (const char *cmd_line)
 {
-  pid_t pid = process_execute (cmd_line);
+	void *kaddr = uaddr_to_kaddr ((void *)cmd_line);
+  pid_t pid = process_execute ((const char *)kaddr);
   return pid;
 }
 
 /* Wait for termination of child process whose process id is pid. */
-int wait (pid_t pid)
+int
+wait (pid_t pid)
 {
   return process_wait (pid);
 }
 
-bool create (const char *file, unsigned initial_size)
+bool
+create (const char *file, unsigned initial_size)
 {
-  return filesys_create (file, initial_size);
+	void *kaddr;
+	bool success;
+
+	if (file == NULL)
+		exit (FAILURE);
+
+	check_user_address ((void*)file);
+	kaddr = uaddr_to_kaddr ((void *)file);
+
+	if (strlen (kaddr) == 0)
+		exit (FAILURE);
+
+	lock_acquire (&filesys_lock);
+  success = filesys_create ((const char*)kaddr, initial_size);
+	lock_release (&filesys_lock);
+	return success;
 }
 
-bool remove (const char *file)
+bool
+remove (const char *file)
 {
+	void *kaddr;
+	bool success;
+
+	if (file == NULL)
+		exit (FAILURE);
+
+	check_user_address ((void*)file);
+	kaddr = uaddr_to_kaddr ((void *)file);
+
+	if (strlen (kaddr) == 0)
+		exit (FAILURE);
+
   /* File is removed regardless of whether it is open or closed. */
-  return filesys_remove (file);
+	lock_acquire (&filesys_lock);
+  success = filesys_remove ((const char*)kaddr);
+	lock_release (&filesys_lock);
+	return success;
 }
 
-int open (const char *file)
+int
+open (const char *file)
 {
   struct file *f;
-  f = filesys_open (file);
+	void *kaddr;
+
+	if (file == NULL)
+		exit (FAILURE);
+
+	check_user_address ((void *)file);
+	kaddr = uaddr_to_kaddr ((void *)file);
+
+	if (strlen (kaddr) == 0)
+		return FAILURE;
+
+	lock_acquire (&filesys_lock);
+  f = filesys_open (kaddr);
+	/* lock release? */
+	lock_release (&filesys_lock);
+
+	if (f == NULL)
+		return FAILURE;
+	/*{
+		if (filesys_create (file, 0))
+			f = filesys_open (file);
+		else
+			exit (FAILURE);
+	}*/
+
+	/* need a lock? */
   return fdt_insert (f);
 }
 
-int filesize (int fd)
+int
+filesize (int fd)
 {
   struct thread *cur = thread_current ();
-  if (fd == 0 || fd == 1)
-    return -1;
+	int size;
+
+  if (fd == 0 || fd == 1 || fd >= FDT_SIZE)
+    exit (FAILURE);
   if (cur->fdt[fd] == NULL)
-    return -1;
-  return file_length (cur->fdt[fd]);
+    exit (FAILURE); /* return FAILURE? */
+
+	/* file size should not be changed. */
+	lock_acquire (&filesys_lock);
+  size = file_length (cur->fdt[fd]);
+	lock_release (&filesys_lock);
+
+	return size;
 }
 
-int read (int fd, void* buffer, unsigned size)
+int
+read (int fd, void* buffer, unsigned size)
 {
   struct thread *cur;
+	unsigned i;
+	unsigned size_read;
+	void *kaddr;
 
-  if (fd == 1)
-    return -1;
+	check_user_buffer (buffer, size);
+	kaddr = uaddr_to_kaddr (buffer);
+
+  if (fd == 1 || fd >= FDT_SIZE)
+    return FAILURE;
 
   if (fd == 0)
-    return input_getc();
+	{
+		for (i = 0; i < size ; i++)
+			*((uint8_t *)kaddr + i) = input_getc();
+		return size;
+	}
 
   cur = thread_current ();
   if (cur->fdt[fd] == NULL)
-    return -1;
+    return FAILURE;
 
-  return file_read (cur->fdt[fd], buffer, size);
+	lock_acquire (&filesys_lock);
+  size_read = file_read (cur->fdt[fd], kaddr, size);
+	lock_release (&filesys_lock);
+	return size_read;
 }
 
-int write (int fd, const void *buffer, unsigned size)
+int
+write (int fd, const void *buffer, unsigned size)
 {
   struct thread *cur;
+	int size_write;
+	void *kaddr;
 
-  if (fd == 0)
-    return -1;
+	check_user_buffer ((void*)buffer, size);
+	kaddr = uaddr_to_kaddr ((void*)buffer);
+
+  if (fd <= 0 || fd >= FDT_SIZE)
+    exit (FAILURE); // return -1;
 
   if (fd == 1)
   {
-    putbuf (buffer, size);
+    putbuf ((const char*)kaddr, size);
     return size;
   }
-
+	
   cur = thread_current ();
   if (cur->fdt[fd] == NULL)
-    return -1;
+    return FAILURE;
 
-  return file_write (cur->fdt[fd], buffer, size);
+	lock_acquire (&filesys_lock);
+  size_write = file_write (cur->fdt[fd], kaddr, size);
+	lock_release (&filesys_lock);
+	return size_write;
 }
 
-void seek (int fd, unsigned position)
+void
+seek (int fd, unsigned position)
 {
   struct thread *cur = thread_current ();
 
-  if (fd == 0 || fd == 1)
-    return ;
+  if (fd <= 1 || fd >= FDT_SIZE)
+		exit (FAILURE);
 
   if (cur->fdt[fd] == NULL)
-    return;
-
+		exit (FAILURE);
+	
+	lock_acquire (&filesys_lock);
   file_seek (cur->fdt[fd], position);
+	lock_release (&filesys_lock);
 }
 
-unsigned tell (int fd)
+unsigned
+tell (int fd)
 {
   struct thread *cur = thread_current ();
+	unsigned position;
 
-  /*
-  if (fd == 0 || fd == 1)
-    return 0;
+	if (fd <= 1 || fd >= FDT_SIZE)
+		exit (FAILURE);
 
   if (cur->fdt[fd] == NULL)
-    return 0;
-  */
+		exit (FAILURE);
 
-  return file_tell (cur->fdt[fd]);
+	lock_acquire (&filesys_lock);
+  position = file_tell (cur->fdt[fd]);
+	lock_release (&filesys_lock);
+	return position;
 }
 
-void close (int fd)
+void
+close (int fd)
 {
   fdt_remove (fd);
 }
 
 
-static void check_user_pointer (const void* uaddr)
+static void
+check_user_address (void* uaddr)
 {
   if (uaddr == NULL)
     exit (FAILURE);
@@ -275,8 +383,34 @@ static void check_user_pointer (const void* uaddr)
     exit (FAILURE);
 }
 
+static void
+check_user_buffer (void* buffer, unsigned size)
+{
+	unsigned i;
+	for (i = 0; i < size; i++)
+		check_user_address ((void*) ((char*) buffer + i));
+}
 
-static void copy_args (void* user_stack, int *args, int arg_num)
+/* Converts the user virtual address to the kernel virtual address. */
+static void*
+uaddr_to_kaddr (void* uaddr)
+{
+	void *kaddr = NULL;
+	
+	/* check whether the user virtual address is valid. */
+	check_user_address (uaddr);
+
+	kaddr = pagedir_get_page (thread_current ()->pagedir, uaddr);
+
+	/* the user virtual address is unmapped. */
+	if (kaddr == NULL)
+		exit (FAILURE);
+	
+	return kaddr;
+}
+
+static void
+copy_args (void* user_stack, int *args, int arg_num)
 {
   int i;
   int *uaddr = NULL;
@@ -285,23 +419,7 @@ static void copy_args (void* user_stack, int *args, int arg_num)
   {
     uaddr = (int*)user_stack;
     uaddr += (1 + i);
-    check_user_pointer ((void*)uaddr);
-    memcpy (args+i, uaddr, sizeof(int));
-    // printf ("Copy arguments: %d\n", args[i]);
-  }
-
-}
-
-static void copy_args_write (void* user_stack, int *args, int arg_num)
-{
-  int i;
-  int *uaddr = NULL;
-
-  for (i=0; i<arg_num; i++)
-  {
-    uaddr = (int*)user_stack;
-    uaddr += (5 + i);
-    check_user_pointer ((void*)uaddr);
+    check_user_address ((void*)uaddr);
     memcpy (args+i, uaddr, sizeof(int));
     // printf ("Copy arguments: %d\n", args[i]);
   }
@@ -312,13 +430,16 @@ static int
 fdt_insert (struct file *f)
 {
   struct thread* cur = thread_current ();
+	enum intr_level old_level;
   int i;
 
   for (i = 2; i < FDT_SIZE; i++)
   {
     if (cur->fdt[i] == NULL)
     {
+			old_level = intr_disable ();
       cur->fdt[i] = f;
+			intr_set_level (old_level);
       return i;
     }
   }
@@ -336,12 +457,22 @@ static void
 fdt_remove (int fd)
 {
   struct thread *cur = thread_current ();
-  /* if fd is 0 or 1? */
-  
+	enum intr_level old_level;
+
+  if (fd <= 1 || fd >= FDT_SIZE)
+		exit (FAILURE);
+
+  if (cur->fdt[fd] == NULL)
+		exit (FAILURE);
+
   /* close file */
-  if (fd != 0 && fd != 1 && cur->fdt[fd] != NULL)
-    file_close (cur->fdt[fd]);
+	/* lock acquire? */
+	lock_acquire (&filesys_lock);
+  file_close (cur->fdt[fd]);
+	lock_release (&filesys_lock);
 
   /* Resets FDT entry. */
-  thread_current ()->fdt[fd] = NULL;
+	old_level = intr_disable ();
+  cur->fdt[fd] = NULL;
+	intr_set_level (old_level);
 }

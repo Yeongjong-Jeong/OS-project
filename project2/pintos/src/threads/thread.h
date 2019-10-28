@@ -1,5 +1,10 @@
 #include "threads/synch.h"
 
+#ifdef USERPROG
+#include "filesys/file.h"
+#include "filesys/off_t.h"
+#endif
+
 #ifndef THREADS_THREAD_H
 #define THREADS_THREAD_H
 
@@ -16,6 +21,14 @@ enum thread_status
     THREAD_DYING,       /* About to be destroyed. */
     THREAD_CHILD_WAIT   /* Waiting for the parent which is waiting for. */
   };
+
+/* An open file. */
+struct file
+	{
+		struct inode *inode;
+		off_t pos;
+		bool deny_write;
+	};
 
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
@@ -109,7 +122,8 @@ struct thread
     struct list_elem child_elem;        /* Children list element. */
     struct semaphore sema_wait;         /* Semaphore for wait. */
     struct semaphore sema_exec;         /* Semaphore for execute. */
-    struct file *fdt[FDT_SIZE];         /* file descriptor table */
+    struct file *fdt[FDT_SIZE];         /* File descriptor table */
+		struct file *opened_file;						/* Executable file */
     /*struct file **fdt;*/                 
 #endif
 

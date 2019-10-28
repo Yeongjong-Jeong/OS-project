@@ -13,6 +13,7 @@
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "filesys/file.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -293,25 +294,52 @@ void
 thread_exit (void) 
 {
   struct thread *cur = thread_current ();
+  struct list_elem *e;
+  struct thread *child;
+	int i;
   ASSERT (!intr_context ());
 
 #ifdef USERPROG
   process_exit ();
+ 
+  intr_disable ();
+	if (cur != initial_thread && !list_empty (&cur->child_list))
+	{
+  	for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list)
+      	; e = list_next (e))
+  	{
+  	  child = list_entry (e, struct thread, child_elem);
+			// child process still alive 
+			// set child's parent pointer to NULL. 
+			if (child->status != THREAD_CHILD_WAIT)
+			{
+				child->parent = NULL;
+			}
+			else
+			{
+				thread_deallocate_child_process (child);
+			}
+  	}
+	}
+	
+	/* Close all files. */
+	for (i = 2; i < FDT_SIZE; i++)
+	{
+		if (cur->fdt[i] != NULL)
+			file_close (cur->fdt[i]);
+	}
   
-  /* parent still alive */
+	/* parent still alive */
   if (cur->parent != NULL)
   {
     cur->status = THREAD_CHILD_WAIT;
-
-    /* Prevents scheduling before the child completely terminates */
-    intr_disable ();
 
     /* free the kernel memory of the file descriptor table. */
     /* palloc_free_page (cur->fdt); */
 
     /* parent is waiting for me being exited. */
-    if (cur->sema_wait.value != 0)
-      sema_up (&thread_current ()->sema_wait);
+    if (cur->sema_wait.value == 0)
+      sema_up (&cur->sema_wait);
     /* child process should not  */
   }
   /* Remove thread from all threads list, set our status to dying,
@@ -319,12 +347,10 @@ thread_exit (void)
      when it calls thread_schedule_tail(). */
   else
   {
-    intr_disable ();
     list_remove (&cur->allelem);
     cur->status = THREAD_DYING;
   }
-  /* makes the child processes not to point the current process. */
-  free_children (); 
+
   schedule ();
   NOT_REACHED ();
 #else
@@ -463,8 +489,10 @@ thread_find_tid (tid_t tid)
 void thread_deallocate_child_process (struct thread* child)
 {
   ASSERT (is_thread (child));
-  ASSERT (child != thread_current ());
+  ASSERT (child != running_thread ());
 
+  list_remove (&child->allelem);
+	list_remove (&child->child_elem);
   palloc_free_page (child);
 }
 
@@ -573,15 +601,20 @@ init_thread (struct thread *t, const char *name, int priority)
 #ifdef USERPROG
   t->exit_status = 0;
   t->load_status = 0;
-  t->parent = running_thread (); /* thread_current ()? */
-  list_init (&t->child_list);
+	list_init (&t->child_list);
+	/* sorted linked list - sorted from oldest to youngest. */
+	if (t == initial_thread)
+		t->parent = NULL;
+	else
+	{
+  	list_push_back (&(running_thread ()->child_list), &t->child_elem);
+		t->parent = running_thread (); /* thread_current ()? */
+	}
   sema_init (&t->sema_wait, 0);
   sema_init (&t->sema_exec, 0);
-  /* thread_current ()? */
-  /* sorted linked list - sorted from oldest to youngest. */
-  list_push_back (&(running_thread ()->child_list), &t->child_elem);
   for (i = 0; i < FDT_SIZE; i++)
     t->fdt[i] = NULL;
+	t->opened_file = NULL;
   /*
   t->fdt = palloc_get_page(PAL_ZERO);
   memset (t->fdt, 0, (sizeof *t)*64);
