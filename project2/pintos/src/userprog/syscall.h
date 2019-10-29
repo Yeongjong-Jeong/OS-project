@@ -3,6 +3,8 @@
 #ifndef USERPROG_SYSCALL_H
 #define USERPROG_SYSCALL_H
 
+/* Global Lock
+   to avoid race condition on file. */
 struct lock filesys_lock;
 
 void syscall_init (void);

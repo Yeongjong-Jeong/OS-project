@@ -29,6 +29,7 @@ static void fdt_remove (int fd);
 void
 syscall_init (void)
 {
+	/* Initialize the global lock FILESYS_LOCK. */
 	lock_init (&filesys_lock);
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
 }
