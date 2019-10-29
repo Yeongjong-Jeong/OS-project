@@ -19,7 +19,9 @@ enum thread_status
     THREAD_READY,       /* Not running but ready to run. */
     THREAD_BLOCKED,     /* Waiting for an event to trigger. */
     THREAD_DYING,       /* About to be destroyed. */
+#ifdef USERPROG
     THREAD_CHILD_WAIT   /* Waiting for the parent which is waiting for. */
+#endif
   };
 
 /* An open file. */
@@ -122,9 +124,9 @@ struct thread
     struct list_elem child_elem;        /* Children list element. */
     struct semaphore sema_wait;         /* Semaphore for wait. */
     struct semaphore sema_exec;         /* Semaphore for execute. */
+		int fdt_max;												/* opened FD maximum value */
     struct file *fdt[FDT_SIZE];         /* File descriptor table */
 		struct file *opened_file;						/* Executable file */
-    /*struct file **fdt;*/                 
 #endif
 
     /* Owned by thread.c. */
@@ -167,8 +169,9 @@ void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);
 
-
+#ifdef USERPROG
 struct thread *validate_child_pid (tid_t);
 struct thread *thread_find_tid (tid_t);
 void thread_deallocate_child_process (struct thread*);
+#endif
 #endif /* threads/thread.h */

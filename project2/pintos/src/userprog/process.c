@@ -62,14 +62,16 @@ process_execute (const char *file_name)
     cur = thread_current ();
 
 		old_level = intr_disable ();
-    sema_down (&cur->sema_exec);
+    /* wait until the child process load the binary file successfully. */
+    sema_down (&cur->sema_exec); 
 		intr_set_level (old_level);
 
+    /* Finds the child process just created. */
     child = thread_find_tid (tid);
 
     ASSERT (child != NULL);
 
-    /* Fail to load the program. */
+    /* The child process fails to load the program, so deallocate it. */
     if (child->load_status == 0)
     {
       thread_deallocate_child_process (child);
@@ -80,8 +82,7 @@ process_execute (const char *file_name)
   return tid;
 }
 
-/* A thread function that loads a user process and starts it
-   running. */
+/* A thread function that loads a user process and starts it running. */
 static void
 start_process (void *file_name_)
 {
@@ -106,11 +107,12 @@ start_process (void *file_name_)
   /* if success, stack for the interrupt frame is allocated, 
      so if_.esp points to the stack of the interrupt frame. */
 
-	/* Successfully loaded. */
+	/* The process successfully load the binary file. */
   if (success)
     thread_current ()->load_status = 1;
 
-  /* Child process is completely loaded. */
+  /* Notify the parent process
+     that the child process was loaded successfully. */
   sema_up (&thread_current ()->parent->sema_exec);
 
   /* If load failed, quit. */
@@ -144,10 +146,7 @@ start_process (void *file_name_)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
 process_wait (tid_t child_tid UNUSED) 
 {
@@ -158,6 +157,7 @@ process_wait (tid_t child_tid UNUSED)
   /* Validates the process id of the child process
      which the current process is waing for. */
   child = validate_child_pid (child_tid);
+  /* If the tid is not valid, return -1. */
   if (child == NULL)
     return -1;
 
@@ -166,9 +166,10 @@ process_wait (tid_t child_tid UNUSED)
 	{
 	 sema_down (&child->sema_wait);
 	}
-  /* The child process can already be terminated
-     before call process_wait (),
-     so remove it from the children list and deallocates it. */
+  /* FYI: The child process can already be terminated
+     before call process_wait (). */
+  /* Removes the terminated child process
+     from the children list and deallocates it. */
   old_level = intr_disable ();
   list_remove (&child->child_elem);
 	list_remove (&child->allelem);
@@ -180,6 +181,8 @@ process_wait (tid_t child_tid UNUSED)
   // ASSERT (child != thread_current ());
   palloc_free_page (child);
 
+  /* Returns the exit status of the child process just terminated. */
+  /* FYI: the exit status could be -1, because of termination by kernel. */
   return child_exit_status;
 }
 
@@ -208,6 +211,7 @@ process_exit (void)
       pagedir_destroy (pd);
     }
 
+  /* Allows modification of the current binary file. */
 	if (cur->opened_file != NULL)
 	{
 		file_allow_write (cur->opened_file);
@@ -232,7 +236,7 @@ process_activate (void)
   tss_update ();
 }
 
-/**/
+/* Count the number of arguments in ARG. */
 int count_argc (char *arg)
 {
   int count = 0;
@@ -261,9 +265,11 @@ int count_argc (char *arg)
   return count;
 }
 
-/**/
+/* Parse the User program arguments
+   and pass the arguments on user stack of new process. */
 void
-set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpointer)
+set_up_stack_intr_frame (int argc, char* file_name, char* args,
+                         void** stackpointer)
 {
   int size_token, padding;
   int total_input_size = 0;
@@ -271,6 +277,7 @@ set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpoin
   void *argv[argc+1];
   int i = 0;
 
+  /* Parse the arguments. */
   argv[i] = (void*)file_name;
   i++;
 	if (args == NULL)
@@ -285,6 +292,8 @@ set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpoin
  	 	}
 	}
 
+  /* Push the arguments to the user stack.
+     And sums up the total bytes of arguments. */
   for (i=argc-1; i>=0; i--)
   {
     size_token = strlen ((char*)argv[i]) + 1;
@@ -301,10 +310,13 @@ set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpoin
   /* argv[argc] = 0 */
   argv[argc] = (void*)0;
 
+  /* Zero padding to be a multiple of 4 bytes. */
   padding = (total_input_size % 4) ? 4 - (total_input_size % 4) : 0;
   *(char**)stackpointer -= padding;
   memset (*stackpointer, 0, (size_t)padding);
 
+  /* Push the pointers to the arguments which are pushed to the user stack
+   * on the user stack*/
   /* argv[argc] ~ argv[0] */
   for (i=argc; i>=0; i--)
   {
@@ -312,11 +324,14 @@ set_up_stack_intr_frame (int argc, char* file_name, char* args, void** stackpoin
     memcpy (*stackpointer, &argv[i], sizeof(void*));    
   }
 
+  /* Push the argv on the user stack. */
   argv[0] = *stackpointer;
   *(char**)stackpointer -= sizeof(char**);
   memcpy (*stackpointer, &argv[0], sizeof(char**));
+  /*Push the argc on the user stack. */
   *(char**)stackpointer -= sizeof(int);
   memcpy (*stackpointer, &argc, sizeof(int));
+  /* Push the return address(fake address) on the user stack. */
   *(char**)stackpointer -= sizeof(void*);
   memset (*stackpointer, 0, sizeof(void*));
 }
@@ -498,7 +513,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 	
-	/* Prevent modifying data of the opened file. */
+	/* Prohibit modification of the currently loaded binary file. */
 	old_level = intr_disable ();
 	t->opened_file = file;
 	file_deny_write (file);	
@@ -508,7 +523,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 	return success;
 
  done:
-  /* We arrive here whether the load is successful or not. */
+  /* We arrive here if the load is not successful. */
   file_close (file);
   return success;
 }
