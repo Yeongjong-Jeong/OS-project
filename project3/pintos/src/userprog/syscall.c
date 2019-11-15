@@ -18,13 +18,18 @@
 #define FAILURE -1
 
 static void syscall_handler (struct intr_frame *);
+
 static void check_user_address (void* uaddr);
 static void check_user_buffer (void* buffer, unsigned size, bool to_write);
 static void* uaddr_to_kaddr (void* uaddr);
+
 static void copy_args (void* user_stack, int *args, int arg_num);
+
 static int fdt_insert (struct file *);
 static struct file *fdt_find (int fd);
 static void fdt_remove (int fd);
+
+static struct file *mmap_check (int fd, void *addr);
 
 void
 syscall_init (void)
@@ -42,7 +47,7 @@ syscall_handler (struct intr_frame *f UNUSED)
   int args[3];    /* Arguments to be passed to the system call. */
 
   /* System call number. */
-  system_call_number = *(int*)f->esp;
+  system_call_number = *(int *) f->esp;
   
   switch (system_call_number)
   {
@@ -61,67 +66,79 @@ syscall_handler (struct intr_frame *f UNUSED)
     case SYS_EXEC:                   /* Start another process. */
     {
       copy_args (f->esp, args, 1);
-      f->eax = exec ((const char*)args[0]);
+      f->eax = exec ((const char *) args[0]);
       break;
     }
     case SYS_WAIT:                   /* Wait for a child process to die. */
     {
       copy_args (f->esp, args, 1);
-      f->eax = wait ((pid_t)args[0]);
+      f->eax = wait ((pid_t) args[0]);
       break;
     }
     case SYS_CREATE:                 /* Create a file. */
     {
       copy_args (f->esp, args, 2);
-      f->eax = create ((const char*)args[0], (unsigned)args[1]);
+      f->eax = create ((const char *) args[0], (unsigned) args[1]);
       break;
     }
     case SYS_REMOVE:                 /* Delete a file. */
     {
       copy_args (f->esp, args, 1);
-      f->eax = remove ((const char*)args[0]);
+      f->eax = remove ((const char *) args[0]);
       break;
     }
     case SYS_OPEN:                   /* Open a file. */
     {
       copy_args (f->esp, args, 1);
-      f->eax = open ((const char*)args[0]);
+      f->eax = open ((const char *) args[0]);
       break;
     }
     case SYS_FILESIZE:               /* Obtain a file's size. */
     {
       copy_args (f->esp, args, 1);
-      f->eax = filesize ((int)args[0]);
+      f->eax = filesize ((int) args[0]);
       break;
     }
     case SYS_READ:                   /* Read from a file. */
     {
       copy_args (f->esp, args, 3);
-      f->eax = read ((int)args[0], (void*)args[1], (unsigned)args[2]);
+      f->eax = read ((int) args[0], (void *) args[1], (unsigned) args[2]);
       break;
     }
     case SYS_WRITE:                  /* Write to a file. */
     {
       copy_args (f->esp, args, 3);
-      f->eax = write (args[0], (void*)args[1], (unsigned)args[2]);
+      f->eax = write (args[0], (void *) args[1], (unsigned) args[2]);
       break;
     }
     case SYS_SEEK:                   /* Change position in a file. */
     {
       copy_args (f->esp, args, 2);
-      seek ((int)args[0], (unsigned)args[1]);
+      seek ((int) args[0], (unsigned) args[1]);
       break;
     }
     case SYS_TELL:                   /* Report current position in a file. */
     {
       copy_args (f->esp, args, 1);
-      f->eax = tell ((int)args[0]);
+      f->eax = tell ((int) args[0]);
       break;
     }
     case SYS_CLOSE:                  /* Close a file. */
     {
       copy_args (f->esp, args, 1);
-      close ((int)args[0]);
+      close ((int) args[0]);
+      break;
+    }
+    case SYS_MMAP:                    /* Map a file into memory. */
+    {
+      copy_args (f->esp, args, 2);
+      f->eax = mmap ((int) args[0], (void *) args[1]);
+      break;
+    }
+    case SYS_MUNMAP:                  /* Remove a memory mapping. */
+    {
+      copy_args (f->esp, args, 1);
+      munmap ((mapid_t) args[0]);
       break;
     }
     default:
@@ -161,7 +178,7 @@ pid_t
 exec (const char *cmd_line)
 {
   /* Check whether the given string is valid or not. */
-  check_user_buffer (cmd_line, strlen(cmd_line)+1, false);
+  check_user_buffer ((void *) cmd_line, strlen(cmd_line)+1, false);
 
   /* Converts the user virtual address to the physical kernel address. */
 	// void *kaddr = uaddr_to_kaddr ((void *)cmd_line);
@@ -419,6 +436,80 @@ close (int fd)
   fdt_remove (fd);
 }
 
+/* Map a file into memory.
+ * Returns mapping_id if success, return -1 otherwise. */
+int
+mmap (int fd, void *addr)
+{
+  bool success = false;
+	enum intr_level old_level;
+  struct file *file, *new_file;
+  struct mmap_file * mmfile;
+  
+  file = mmap_check (fd, addr);
+  if (file == NULL)
+    return FAILURE;
+
+  /* Opens a new file (reproduce the original file).
+     Make the mmaped memory valid even if the file close. */
+  new_file = file_reopen (file);
+  if (new_file == NULL)
+    return FAILURE;
+
+  mmfile = alloc_mmap_file (new_file);
+  if (mmfile == NULL)
+  {
+    file_close (new_file);
+    return FAILURE;
+  }
+
+  /* Create VM_ENTRYs, set up their members, and insert it into vm table.
+     Also, insert them into list VME_LIST of MMAP_FILE structure. 
+     Return value is boolean value success(true) or failure(false). */
+	old_level = intr_disable ();
+  success = mmap_alloc_vm_entry (mmfile, addr);
+	intr_set_level (old_level);
+
+  if (!success)
+  {
+    file_close (new_file);
+    return FAILURE;
+  }
+
+  /* Return mapid */
+  return mmfile->id;
+}
+
+/* Remove a memory mapping. */
+void
+munmap (mapid_t mapid)
+{
+  /* Unmap the mappings in the MMAP_LIST
+     which has not been previously unmapped. */
+  struct list *mmap_list = &thread_current ()->mmap_list;
+  struct list_elem *e = NULL;
+  struct mmap_file *mmfile = NULL;
+  bool find = false;
+	enum intr_level old_level;
+
+  /* Find a MMAP_FILE whose map_id is MAPID. */
+  for (e = list_begin (mmap_list); e != list_end (mmap_list);
+       e = list_next (e))
+  {
+    mmfile = list_entry (e, struct mmap_file, elem);
+    if (mmfile->id == mapid)
+    {
+      find = true;
+      break;
+    }
+  }
+
+  if (!find)
+    return ;
+	
+  munmap_one_entry (mmfile);
+}
+
 /* Checks whether the pointer passed by the user is valid.
  * If it not, EXIT(-1). */
 static void
@@ -561,3 +652,63 @@ fdt_remove (int fd)
   cur->fdt[fd] = NULL;
 	intr_set_level (old_level);
 }
+
+/* Check the validity before running MMAP ().
+   MMAP error case check.
+     Return value is a file descriptor associating with FD.
+     Test includes :
+     (1) FD should be valid.
+     (2) addr should not be 0.
+     (3) addr should not be in used. (need consecutive memory block)
+     (4) find the file descriptor associating with FD.
+     (5) check the size of file is larger than 0.
+     If test fails, return NULL. */
+static struct file *
+mmap_check (int fd, void *addr)
+{
+	struct file *file = NULL;
+  struct vm_entry *vme = NULL;
+  size_t offset = 0;
+	size_t read_bytes = 0;
+
+  /* Invalid FD. STDIN and STDOUT are not mappable. */
+  if (fd == 0 || fd == 1 || fd >= FDT_SIZE)
+    return NULL;
+
+  /* Addr is 0. (Because this area is reserved for PintOS. */
+  if (addr == (void *) 0)
+    return NULL;
+
+	/* Addr should be on the user virtual address.
+		 Addr should be aligned. */
+	if (!is_user_vaddr (addr) || addr < USER_VADDR_LOW_BOUND 
+			|| (uint32_t) addr % PGSIZE != 0)
+		return NULL;
+
+  /* Find the file structure associating with FD. */
+  file = fdt_find (fd);
+  if (file == NULL)
+    return NULL;             /* No such file. */
+
+  read_bytes = file_length (file);
+  /* If the file size is 0, return -1. */
+  if (read_bytes == 0)
+    return NULL;
+
+  /* Check whether ADDR is valid, or not. */
+  /* If ADDRs are not pages aligned (ADDR is already in use),
+     return -1. (need consecutive free memory) */
+  for (offset = 0; offset < read_bytes; offset += PGSIZE)
+  {
+    vme = find_vme ((void *)((char *) addr + offset));
+    if (vme != NULL)
+      return NULL;
+  }
+  vme = find_vme ((void *)((char *) addr + read_bytes - 1));
+  if (vme != NULL)
+    return NULL;
+
+  /* All test cases passes, return file descriptor. */
+  return file;
+}
+

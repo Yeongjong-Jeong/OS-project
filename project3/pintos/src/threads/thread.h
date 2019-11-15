@@ -129,6 +129,8 @@ struct thread
     struct file *fdt[FDT_SIZE];         /* File descriptor table */
 		struct file *opened_file;						/* Executable file */
     struct hash vm;                     /* Virtual Address Space manager. */
+    struct list mmap_list;              /* List of mmap_file. */
+    int next_map_id;                    /* Map_id to be given. */
 #endif
 
     /* Owned by thread.c. */

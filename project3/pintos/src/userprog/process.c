@@ -104,6 +104,10 @@ start_process (void *file_name_)
 
   /* Initialize the hash table. */
   vm_init (&thread_current ()->vm);
+  /* Initialize the list MMAP_LIST of MMAP_FILEs. */
+  list_init (&thread_current()->mmap_list);
+  /* Initialize the map_id to be given to the new mmap_file structure. */
+  thread_current ()->next_map_id = 1;
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -200,6 +204,8 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
+  /* Delete all mmaped file associating with this thread. */
+  mmap_destroy (&cur->mmap_list);
   /* Delete all VM_ENTRYs associating with this thread. */
   vm_destroy (&cur->vm);
 
@@ -264,7 +270,7 @@ handle_mm_fault (struct vm_entry *vme)
       break;
 
     case VM_FILE:
-      /*  */
+      success = load_file (kpage, vme);
       break;
 
     case VM_ANON:
@@ -286,6 +292,8 @@ handle_mm_fault (struct vm_entry *vme)
     return success;
   }
 
+  /* Successfully load a file & install a page table entry. */
+  vme->in_memory = true;
   return success;
 }
 
@@ -458,8 +466,6 @@ static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
-static void setup_vm_entry (struct vm_entry *, uint8_t, bool, bool,
-                            void *, struct file*, off_t, size_t, size_t);
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -669,30 +675,10 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /*
-      // Get a page of memory.
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
-        return false;
-
-      // Load this page.
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      // Add the page to the process's address space.
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      */
-
       /* Create VM_ENTRY. */
       vme = (struct vm_entry *) malloc (sizeof (struct vm_entry));
+      if (vme == NULL)
+        return false;
 
       /* Set up VM_ENTRY members. */
       setup_vm_entry (vme, VM_BIN, writable, false, upage,
@@ -767,17 +753,4 @@ install_page (void *upage, void *kpage, bool writable)
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
 
-static void
-setup_vm_entry (struct vm_entry *e, uint8_t type, bool writable,
-                bool in_memory, void *uvaddr, struct file* file,
-                off_t offset, size_t read_bytes, size_t zero_bytes)
-{
-  e->type = type;
-  e->writable = writable;
-  e->in_memory = in_memory;
-  e->vaddr = uvaddr;
-  e->file = file;
-  e->offset = offset;
-  e->read_bytes = read_bytes;
-  e->zero_bytes = zero_bytes;
-}
+
