@@ -283,6 +283,12 @@ handle_mm_fault (struct vm_entry *vme)
       success = true;
       break;
     }
+    case VM_STACK_GROWTH:
+    {
+      vme->type = VM_ANON;
+      success = true;
+      break;
+    }
   }
 
   if (!success)
@@ -303,7 +309,7 @@ handle_mm_fault (struct vm_entry *vme)
   vme->in_memory = true;
   /* Setup the member VME of the PAGE entry. */
   setup_page (page, vme);
-
+	
   return success;
 }
 

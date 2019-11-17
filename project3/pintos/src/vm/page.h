@@ -15,6 +15,7 @@
 #define VM_BIN 0
 #define VM_FILE 1
 #define VM_ANON 2
+#define VM_STACK_GROWTH 3
 
 /* A virtual memory entry for user process.
    Structure that separates logical and physical addresses
@@ -134,6 +135,7 @@ struct mmap_file *alloc_mmap_file (struct file* file);
 bool mmap_alloc_vm_entry (struct mmap_file *mmfile, void *addr);
 
 /************************* Stack Growth related *************************/
+struct vm_entry *stack_grow (void *vaddr, void *esp);
 
 #endif
 #endif

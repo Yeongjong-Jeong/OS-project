@@ -599,4 +599,62 @@ mmap_alloc_vm_entry (struct mmap_file *mmfile, void *addr)
   return success;
 }
 
+/************************* Stack Growth related *************************/
+static bool check_stack (void *vaddr, void *esp);
+
+/* Let the stack be expandable.
+   Maximum expandable size of stack is up to 8MB.
+   Expand the stack when the memory access is within 32 Bytes
+   from the stack top. (Heuristic: PUSHA pushes 32 Bytes at once) */
+struct vm_entry *
+stack_grow (void *vaddr, void *esp)
+{
+  uint8_t *kpage, *upage;
+  bool success = false;
+  struct vm_entry *vme;
+
+  if (!check_stack (vaddr, esp))
+    return false;
+
+  /* Round down the vaddr to be a user virtual page address. */
+  upage = pg_round_down (vaddr);
+
+  /* Create VM_ENTRY. */
+  vme = (struct vm_entry *) malloc (sizeof (struct vm_entry));
+
+  /* Set up VM_ENTRY members. */
+  setup_vm_entry (vme, VM_STACK_GROWTH, true, false,
+                  upage, NULL, 0, 0, 0);
+
+  /* Using insert_vme (), add vm_entry to hash table. */
+  success = insert_vme (&thread_current ()->vm, vme);
+
+  if (!success)
+  {
+    free (vme);
+    return NULL;
+  }
+
+  return vme;
+}
+
+/* Check whether the accessed address is
+   within 32 Bytes from the stack top
+   and maximum limit of the stack area (8MB). */
+static bool
+check_stack (void *vaddr, void *esp)
+{
+  void *MAX_LIMIT = (void *) (0xC0000000 - 8 * 1024 * 1024);
+  
+  /* Check whether the accessed address is with in maximum limit. */
+  if (vaddr < MAX_LIMIT)
+    return false;
+
+  /* Check whether the accessed address is with in 32 Bytes from ESP. */
+  if (vaddr < esp - 32)
+    return false;
+
+  return true;
+}
+
 #endif
