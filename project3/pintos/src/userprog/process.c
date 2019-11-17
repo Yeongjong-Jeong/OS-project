@@ -259,28 +259,35 @@ bool
 handle_mm_fault (struct vm_entry *vme)
 {
   bool success = false;
-  uint8_t *kpage = palloc_get_page (PAL_USER);
+  struct page *page = page_alloc (PAL_USER);
+  uint8_t *kpage = page->kaddr;
 
   if (kpage == NULL)
     return false;
 
-  switch (vme->type) {
+  switch (vme->type)
+  {
     case VM_BIN:
+    {
       success = load_file (kpage, vme);
       break;
-
+    }
     case VM_FILE:
+    {
       success = load_file (kpage, vme);
       break;
-
+    }
     case VM_ANON:
+    {
+      swap_read_from_disk (vme->swap_index, kpage);
+      success = true;
       break;
-  
+    }
   }
 
   if (!success)
   {
-    palloc_free_page (kpage);
+    page_free (kpage);
     return success;
   }
 
@@ -288,12 +295,15 @@ handle_mm_fault (struct vm_entry *vme)
 
   if (!success)
   {
-    palloc_free_page (kpage);
+    page_free (kpage);
     return success;
   }
 
   /* Successfully load a file & install a page table entry. */
   vme->in_memory = true;
+  /* Setup the member VME of the PAGE entry. */
+  setup_page (page, vme);
+
   return success;
 }
 
@@ -708,15 +718,18 @@ setup_stack (void **esp)
   uint8_t *kpage;
   bool success = false;
   struct vm_entry *vme;
+  struct page *page;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  page = page_alloc (PAL_USER | PAL_ZERO);
+  kpage = page->kaddr;
+
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success)
         *esp = PHYS_BASE;
       else
-        palloc_free_page (kpage);
+        page_free (kpage);
     }
  
   if (success)
@@ -727,6 +740,10 @@ setup_stack (void **esp)
     /* Set up VM_ENTRY members. */
     setup_vm_entry (vme, VM_ANON, true, true,
                     ((uint8_t *) PHYS_BASE) - PGSIZE, NULL, 0, 0, 0);
+
+    /* Set up PAGE member VME. */
+    setup_page (page, vme);
+
     /* Using insert_vme (), add vm_entry to hash table. */
     success = insert_vme (&thread_current ()->vm, vme);
   }

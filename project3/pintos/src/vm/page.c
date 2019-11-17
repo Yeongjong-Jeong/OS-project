@@ -2,14 +2,18 @@
 
 #include "vm/page.h"
 #include "threads/thread.h"
+#include "threads/synch.h"
 #include "threads/malloc.h"
 #include "threads/vaddr.h"
 #include "threads/interrupt.h"
+#include "devices/block.h"
+#include "userprog/pagedir.h"
 #include <string.h>
 // #include <debug.h>
 // #include <stddef.h>
 // #include <stdio.h>
 
+/************************* Demanding page related *************************/
 static hash_hash_func vm_hash_func;
 static hash_less_func vm_less_func;
 static hash_action_func vm_destroy_func;
@@ -111,11 +115,13 @@ setup_vm_entry (struct vm_entry *e, uint8_t type, bool writable,
   e->type = type;
   e->writable = writable;
   e->in_memory = in_memory;
+	e->pin_flag = false;
   e->vaddr = uvaddr;
   e->file = file;
   e->offset = offset;
   e->read_bytes = read_bytes;
   e->zero_bytes = zero_bytes;
+	e->swap_index = 0;
 }
 
 /* Load the file page from the disk to physical memory. */
@@ -137,6 +143,306 @@ load_file (void *kaddr, struct vm_entry *vme)
   return true;
 }
 
+/****************************** SWAP related ******************************/
+static void _setup_page (struct page* page, void *kpage);
+static void page_page_free (struct page* page);
+static size_t swap_find_empty_slot_and_flip (void);
+static void swap_reset_bitmap (size_t slot_index);
+
+/* Initialize the global variable LRU_LIST */
+void
+lru_init (void)
+{
+  list_init (&lru_list);   /* Initialize LRU_LIST. */
+  lock_init (&lru_lock);   /* Initialize LRU_LOCK. */
+}
+
+/* Allocate a page and return PAGE structure associating with the page.
+   If the memory lacks, evict some pages to respond to this function call. */
+struct page *
+page_alloc (enum palloc_flags flags)
+{
+  void *kaddr;
+  struct page *page;
+
+	lock_acquire (&lru_lock);
+  /* Try to get a page from the USER POOL. */
+  while (! (kaddr = palloc_get_page (flags)))
+  {
+		lock_release (&lru_lock);
+    swap_choose_victim_and_free_page ();
+  }
+	lock_release (&lru_lock);
+
+  /* Create PAGE entry. */
+  page = (struct page*) malloc (sizeof (struct page));
+  /* Set up the members of the PAGE entry. */
+  _setup_page (page, kaddr);
+
+  /* Insert the PAGE structure to LRU_LIST. */
+  page_insert_to_lru_list (page);
+	
+  return page;
+}
+
+void
+page_free (void *kaddr)
+{
+  bool find = false;
+  struct page *page;
+  struct list_elem *e;
+
+	lock_acquire (&lru_lock);
+  /* Find the PAGE entry whose KADDR is same
+     with the input KADDR in the LRU_LIST. */
+  for (e = list_begin (&lru_list); e != list_end (&lru_list);
+       e = list_next (e))
+  {
+    page = list_entry (e, struct page, elem);
+    if (page->kaddr == kaddr)
+    {
+      find = true;
+      break;
+    }
+  }
+
+  if (!find)
+    return ;
+
+  page_page_free (page);
+	lock_release (&lru_lock);
+}
+
+void
+page_insert_to_lru_list (struct page* page)
+{
+  list_push_back (&lru_list, &page->elem);
+}
+
+void
+page_remove_from_lru_list (struct page* page)
+{
+  list_remove (&page->elem);
+}
+
+void
+swap_init (void)
+{
+  size_t bitmap_size; /* block_sector_t == uint32_t */
+
+  /* Create a block for swap. */
+  swap_block = block_get_role (BLOCK_SWAP);
+  if (swap_block == NULL)
+    return; // do something.
+
+  /* The number of pages in a SWAP_BLOCK == SWAP_BITMAP size. */
+  bitmap_size = block_size (swap_block) / SECTORS_PER_PAGE;
+
+  /* Create a bitmap for maintaining the swap partition.
+     Each swap partition is managed per 4KBytes swap slot. */
+  swap_bitmap = bitmap_create (bitmap_size);
+  if (swap_bitmap == NULL)
+    return ; // do something.
+
+  /* Set all entry in the bitmap to 0. */
+  bitmap_set_all (swap_bitmap, false);
+  
+  /* Initialize SWAP_LOCK. */
+  lock_init (&swap_lock);
+}
+
+/* Choose a victim from LRU_LIST, swap the page out if needed.
+   And then free the page. */
+void
+swap_choose_victim_and_free_page (void)
+{
+  /* FIFO: Just choose the first page in the LRU_LIST. */
+  struct list_elem *e = list_begin (&lru_list);
+	e = list_next (e);
+	e = list_next (e);
+	e = list_next (e);
+	e = list_next (e);
+
+  struct page *page = list_entry (e, struct page, elem);
+  size_t index_to_swap = 0;
+
+  switch (page->vme->type)
+  {
+    /* VM_BIN.
+       If dirty bit is 1, write to the swap partition and free the page frame.
+       And then, change type to VM_ANON for demanding paging. */
+    case VM_BIN:
+    {
+      if (pagedir_is_dirty (page->thread->pagedir, page->vme->vaddr))
+      {
+        index_to_swap = swap_write_to_disk (page->kaddr);
+        page->vme->swap_index = index_to_swap;
+        page->vme->type = VM_ANON;
+      }
+      break;
+    }
+    /* VM_FILE.
+       If dirty bit is 1, write to the to the file and free the page frame. 
+       If dirty bit is 0, just free the page frame. */
+    case VM_FILE:
+    {
+      if (pagedir_is_dirty (page->thread->pagedir, page->vme->vaddr))
+      {
+        lock_acquire (&filesys_lock);
+        file_write_at (page->vme->file, page->vme->vaddr,
+                       PGSIZE, page->vme->offset);
+        lock_release (&filesys_lock);
+      }
+      break;
+    }
+    /* VM_ANON.
+       Write to the swap partition. */
+    case VM_ANON:
+    {
+      index_to_swap = swap_write_to_disk (page->kaddr);
+      page->vme->swap_index = index_to_swap;
+      break;
+    }
+  }
+  
+  page->vme->in_memory = false;
+ 
+  /* Mark page "not present" in page directory. */
+  pagedir_clear_page (page->thread->pagedir, page->vme->vaddr);
+
+	/* Free the page frame. */
+  page_page_free (page);
+ 
+	lock_acquire (&lru_lock);
+}
+
+void
+set_pin (void)
+{
+	struct hash *vm = &thread_current ()->vm;
+	struct hash_iterator i;
+	struct hash_elem *e;
+	struct vm_entry *vme;
+
+	hash_first (&i, vm);
+	while (e = hash_next (&i))
+	{
+		vme = hash_entry (e, struct vm_entry, elem);
+		vme->pin_flag = true;
+	}
+}
+
+void
+reset_pin (void)
+{
+	struct hash *vm = &thread_current ()->vm;
+	struct hash_iterator i;
+	struct hash_elem *e;
+	struct vm_entry *vme;
+
+	hash_first (&i, vm);
+	while (e = hash_next (&i))
+	{
+		vme = hash_entry (e, struct vm_entry, elem);
+		vme->pin_flag = false;
+	}
+}
+
+size_t
+swap_write_to_disk (void *kaddr)
+{
+	size_t i = 0;
+  size_t index_to_swap = 0;
+  block_sector_t sector;
+
+  /* Find a first-fit location in SWAP_SPACE.
+     This process should be implemented atomically,
+     because the other process should not choose the same sector. */
+  lock_acquire (&swap_lock);
+  index_to_swap = swap_find_empty_slot_and_flip ();
+
+  /* No more space to write, error occurs. */
+  if (index_to_swap == BITMAP_ERROR)
+    exit (-1);
+
+	sector = index_to_swap * SECTORS_PER_PAGE;
+
+  for (i = 0; i < SECTORS_PER_PAGE; i++)
+  {
+    block_write (swap_block, sector + i,
+                 (void *)((char *)kaddr + i * BLOCK_SECTOR_SIZE));
+  }
+  lock_release (&swap_lock);
+
+  return index_to_swap;
+}
+
+void
+swap_read_from_disk (size_t slot_index, void *kaddr)
+{
+	int i = 0;
+  block_sector_t sector = slot_index * SECTORS_PER_PAGE;
+
+  /* ASSERT () : whether the slock_index is in used or not.
+     If the slot_index is not in used, ERROR occurs. */
+
+  /* block_read (struct block *block, block_sector_t sector, void *buffer) */
+  for (i = 0; i < SECTORS_PER_PAGE; i++)
+  {
+    block_read (swap_block, sector + i,
+                 (void *)((char *)kaddr + i * BLOCK_SECTOR_SIZE));
+  }
+
+  /* Reset the bitmap to be unused. */
+  swap_reset_bitmap (slot_index);
+}
+
+void
+setup_page (struct page* page, struct vm_entry *vme)
+{
+  page->vme = vme;
+}
+
+static void
+_setup_page (struct page* page, void *kpage)
+{
+  page->kaddr = kpage;
+  page->thread = thread_current ();
+}
+
+static void
+page_page_free (struct page* page)
+{
+	void *kaddr = page->kaddr;
+
+  /* Remove that page from the LRU_LIST. */
+  page_remove_from_lru_list (page);
+
+  /* should cleen page directory? */
+
+  /* Free the page. */
+  palloc_free_page (kaddr);
+
+  /* Free the page structure. */
+  free (page);
+}
+
+/* Find first 0 bit(UNUSED swap space) in the SWAP_BITMAP
+   and then flip the bit into 1(will be used). */
+static size_t
+swap_find_empty_slot_and_flip (void)
+{
+  return bitmap_scan_and_flip (swap_bitmap, 0, 1, false);
+}
+
+static void
+swap_reset_bitmap (size_t slot_index)
+{
+  bitmap_reset (swap_bitmap, slot_index);
+}
+
+
+/****************************** MMAP related ******************************/
 void
 munmap_one_entry (struct mmap_file *mmfile)
 {
@@ -162,7 +468,7 @@ munmap_one_entry (struct mmap_file *mmfile)
     intr_set_level (old_level);
 
     /* Check whether the page is mapped into physical memory. */
-    if (pagedir_get_page (cur->pagedir, vme->vaddr))
+    if (vme->in_memory)
 		{
     	/* If a mapping(virtual address -> physical address) exists */
     	/* Check whether the page is dirty or not. */
@@ -176,6 +482,9 @@ munmap_one_entry (struct mmap_file *mmfile)
       	file_write_at (vme->file, vme->vaddr, vme->read_bytes, vme->offset);
 				lock_release (&filesys_lock);
 			}
+
+      /* Free a page. */
+      page_free (pagedir_get_page (cur->pagedir, vme->vaddr));
 
     	/* Remove PAGE_TABLE_ENTRY. */
     	old_level = intr_disable ();
