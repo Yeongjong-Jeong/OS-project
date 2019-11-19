@@ -107,6 +107,8 @@ vm_destroy_func (struct hash_elem *e, void *aux UNUSED)
   free ((void *) vme);
 }
 
+
+/* Set up the member variable of the given VM_ENTRY. */
 void
 setup_vm_entry (struct vm_entry *e, uint8_t type, bool writable,
                 bool in_memory, void *uvaddr, struct file* file,
@@ -115,16 +117,19 @@ setup_vm_entry (struct vm_entry *e, uint8_t type, bool writable,
   e->type = type;
   e->writable = writable;
   e->in_memory = in_memory;
-	if (intr_context ())
-		e->pin_flag = true;
-	else
-		e->pin_flag = false;
   e->vaddr = uvaddr;
   e->file = file;
   e->offset = offset;
   e->read_bytes = read_bytes;
   e->zero_bytes = zero_bytes;
 	e->swap_index = 0;
+  
+  /* If the page fault occurs in kernel mode,
+     set the pin flag to prevent eviction. */
+	if (intr_context ())
+		e->pin_flag = true;
+	else
+		e->pin_flag = false;
 }
 
 /* Load the file page from the disk to physical memory. */
@@ -161,6 +166,7 @@ lru_init (void)
   lock_init (&lru_lock);   /* Initialize LRU_LOCK. */
 }
 
+/* Free the all frame table entry associating with the given thread. */
 void
 page_destroy (struct thread *cur)
 {
@@ -192,6 +198,8 @@ page_alloc (enum palloc_flags flags)
   void *kaddr;
   struct page *page;
 
+  /* To prevent the other thread not to modify the page information,
+     acquire the LRU_LOCK. */
 	lock_acquire (&lru_lock);
   /* Try to get a page from the USER POOL. */
   while (! (kaddr = palloc_get_page (flags)))
@@ -212,6 +220,7 @@ page_alloc (enum palloc_flags flags)
   return page;
 }
 
+/* Free a page and frame table entry corresponding to the given KADDR. */
 void
 page_free (void *kaddr)
 {
@@ -219,6 +228,8 @@ page_free (void *kaddr)
   struct page *page;
   struct list_elem *e;
 
+  /* Before removing the page, this function should acquire a lock.
+     Because someone is looking for the page to be evicted. */
 	lock_acquire (&lru_lock);
   /* Find the PAGE entry whose KADDR is same
      with the input KADDR in the LRU_LIST. */
@@ -236,22 +247,29 @@ page_free (void *kaddr)
   if (!find)
     return ;
 
+  /* Free the memory allocated to the page, and PAGE(frame table entry) */
   page_page_free (page);
 	lock_release (&lru_lock);
 }
 
+/* Insert the frame table entry(PAGE) into the frame table(LRU_LIST).
+   Inserting is actually doesn't matter on synchronization. */
 void
 page_insert_to_lru_list (struct page* page)
 {
   list_push_back (&lru_list, &page->elem);
 }
 
+/* Remove the frame table entry(PAGE) from the frame table(LRU_LIST).
+   Remove the frame table entry matters on synchronization.
+   This function should be called after acquiring the lock LRU_LOCK. */
 void
 page_remove_from_lru_list (struct page* page)
 {
   list_remove (&page->elem);
 }
 
+/* Initialize the SWAP_BITMAP, SWAP_BLOCK, SWAP_LOCK (Global variables). */
 void
 swap_init (void)
 {
@@ -354,6 +372,7 @@ set_pin_on_addr (void *vaddr)
 		vme->pin_flag = true;
 }
 
+/* Set pin flag on the pages associating to given user buffer. */
 void
 set_pin_on_buffer (void *buffer, size_t size)
 {
@@ -363,6 +382,7 @@ set_pin_on_buffer (void *buffer, size_t size)
 		set_pin_on_addr (buffer + i * PGSIZE);
 }
 
+/* Rest pin flag (single address). */
 void
 reset_pin_on_addr (void *vaddr)
 {
@@ -372,6 +392,7 @@ reset_pin_on_addr (void *vaddr)
 		vme->pin_flag = false;
 }
 
+/* Reset pin flag (buffer). */
 void
 reset_pin_on_buffer (void *buffer, size_t size)
 {
@@ -381,6 +402,9 @@ reset_pin_on_buffer (void *buffer, size_t size)
 		reset_pin_on_addr (buffer + i * PGSIZE);
 }
 
+/* (Swap-out) Write the page into disk(swap space).
+   Return the index of SWAP_BITMAP which is the index of
+   the swap space storing the given page. */
 size_t
 swap_write_to_disk (void *kaddr)
 {
@@ -410,6 +434,7 @@ swap_write_to_disk (void *kaddr)
   return index_to_swap;
 }
 
+/* (Swap-in) Read the page from the disk(swap space). */
 void
 swap_read_from_disk (size_t slot_index, void *kaddr)
 {
@@ -431,12 +456,14 @@ swap_read_from_disk (size_t slot_index, void *kaddr)
 	lock_release (&swap_lock);
 }
 
+/* Set PAGE to have information about associating VM_ENTRY. */
 void
 setup_page (struct page* page, struct vm_entry *vme)
 {
   page->vme = vme;
 }
 
+/* Set PAGE to have information about associating kernel address. */
 static void
 _setup_page (struct page* page, void *kpage)
 {
@@ -444,6 +471,8 @@ _setup_page (struct page* page, void *kpage)
   page->thread = thread_current ();
 }
 
+/* Remove the PAGE(frame table entry) from the LRU_LIST(frame table).
+   And free the memory space allocated to PAGE. */
 static void
 page_page_free (struct page* page)
 {
@@ -451,8 +480,6 @@ page_page_free (struct page* page)
 
   /* Remove that page from the LRU_LIST. */
   page_remove_from_lru_list (page);
-
-  /* should cleen page directory? */
 
   /* Free the page. */
   palloc_free_page (kaddr);
@@ -469,6 +496,7 @@ swap_find_empty_slot_and_flip (void)
   return bitmap_scan_and_flip (swap_bitmap, 0, 1, false);
 }
 
+/* Set the value(bit) of the givne index of SWAP_BITMAP to be 0 (UNUSED). */
 static void
 swap_reset_bitmap (size_t slot_index)
 {
@@ -516,6 +544,7 @@ swap_choose_victim (void)
 
 
 /****************************** MMAP related ******************************/
+/* Unmap the file associating with MMFILE. */
 void
 munmap_one_entry (struct mmap_file *mmfile)
 {

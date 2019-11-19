@@ -171,7 +171,7 @@ page_fault (struct intr_frame *f)
 			{
 			  success = handle_mm_fault (vme);
 			}
-      /* If VM_ENTRY is NULL, this means it means we need expand stack. */
+      /* If VM_ENTRY is NULL, this may means it means we need expand stack. */
       else
       {
 				/* Page fault at user mode. */
@@ -180,11 +180,13 @@ page_fault (struct intr_frame *f)
 				/* Page fault at kernel mode. */
 				else
 					vme = stack_grow (fault_addr, thread_current ()->esp);
-
+        
+        /* Fail to produce associating VM_ENTRY
+           or this page fault doesn't occur due to stack growth. */
         if (vme == NULL)
-          success = false;
+          success = false;  
         else
-          success = handle_mm_fault (vme);
+          success = handle_mm_fault (vme);  /* Stack growth. */
       }
       /* Check whether the address is successfully loaded and mapped into. */
 			if (success)

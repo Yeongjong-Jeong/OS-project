@@ -77,17 +77,15 @@ struct list lru_list;
 /* A frame table entry. */
 struct page
 {
-  void *kaddr;                    /* Physical frame number. */
+  void *kaddr;                  /* Physical frame number. */
   struct vm_entry *vme;         /* Associated virtual address. */
   struct thread *thread;        /* Thread structure this page belongs to. */
-  struct list_elem elem;         /* LRU field for list. */
+  struct list_elem elem;        /* LRU field for list. */
 };
 
 /* A Global lock. 
-   If one page fault requires I/O,
-   the other page faults which require I/O should wait.
-   If the other page faults that do not require I/O
-   should be able to complete in the meantime. */
+   When accessing/modifing LRU_LIST,
+   the other should not modify the LRU_LIST. */
 struct lock lru_lock;
 
 /* Swap bitmap (Gloval variable):
@@ -97,20 +95,51 @@ struct bitmap *swap_bitmap;
 struct block *swap_block;
 struct lock swap_lock;
 
+/* Initialize the LRU_LIST (Global variable). */
 void lru_init (void);
+
+/* Free the all frame table entry associating with the given thread. */
 void page_destroy (struct thread *cur);
+
+/* Allocate a page and produce a PAGE(frame table entry). */
 struct page *page_alloc (enum palloc_flags flag);
+
+/* Free a page and frame table entry corresponding to the given KADDR. */
 void page_free (void *kaddr);
+
+/* Insert the frame table entry(PAGE) into the frame table(LRU_LIST). */
 void page_insert_to_lru_list (struct page* page);
+
+/* Remove the frame table entry(PAGE) from the frame table(LRU_LIST). */
 void page_remove_from_lru_list (struct page* page);
+
+/* Initialize the SWAP_BITMAP, SWAP_BLOCK, SWAP_LOCK (Global variables). */
 void swap_init (void);
+
+/* Set PAGE to have information about associating VM_ENTRY. */
 void setup_page (struct page *page, struct vm_entry *vme);
+
+/* Choose a victim to be evicted, and free that page. */
 void swap_choose_victim_and_free_page (void);
+
+/* Set pin flag on the page associating to given user address VADDR. */
 void set_pin_on_addr (void *vaddr);
+
+/* Set pin flag on the pages associating to given user buffer. */
 void set_pin_on_buffer (void *buffer, size_t size);
+
+/* Rest pin flag (single address). */
 void reset_pin_on_addr (void *vaddr);
+
+/* Reset pin flag (buffer). */
 void reset_pin_on_buffer (void *buffer, size_t size);
+
+/* (Swap-out) Write the page into disk(swap space).
+   Return the index of SWAP_BITMAP which is the index of
+   the swap space storing the given page. */
 size_t swap_write_to_disk (void *kaddr);
+
+/* (Swap-in) Read the page from the disk(swap space). */
 void swap_read_from_disk (size_t slot_index, void *kaddr);
 
 /****************************** MMAP related ******************************/
@@ -123,6 +152,7 @@ struct mmap_file
   struct list vme_list;         /* VM_ENTRY list. */
 };
 
+/* Unmap the file associating with MMFILE. */
 void munmap_one_entry (struct mmap_file *mmfile);
 
 /* Delete all mmaped file associating with this thread. */
@@ -138,6 +168,9 @@ struct mmap_file *alloc_mmap_file (struct file* file);
 bool mmap_alloc_vm_entry (struct mmap_file *mmfile, void *addr);
 
 /************************* Stack Growth related *************************/
+/* Check whether the valid stack access,
+   if right, allocate the page for stack and return associating VM_ENTRY.
+   If not or fail to allocate VM_ENTRY return NULL. */
 struct vm_entry *stack_grow (void *vaddr, void *esp);
 
 #endif

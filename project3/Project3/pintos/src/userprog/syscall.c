@@ -22,7 +22,6 @@ static void syscall_handler (struct intr_frame *);
 static bool check_user_address_at_stack (void *uaddr);
 static void check_user_address (void *uaddr);
 static void check_user_buffer (void *buffer, unsigned size, bool to_write);
-static void* uaddr_to_kaddr (void *uaddr);
 
 static void copy_args (void *user_stack, int *args, int arg_num);
 
@@ -49,6 +48,11 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   /* System call number. */
   system_call_number = *(int *) f->esp;
+
+  /* Store a stack pointer into the current thread descriptor.
+     Because when the page fault occurs due to stack growth in kernel mode
+     we cannot receive the correct stack pointer address
+     from interrupt frame. */
 	thread_current ()->esp = f->esp;
   
   switch (system_call_number)
@@ -182,9 +186,13 @@ exec (const char *cmd_line)
   /* Check whether the given string is valid or not. */
   check_user_buffer ((void *) cmd_line, strlen(cmd_line) + 1, false);
   
+  /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (cmd_line, strlen (cmd_line) + 1);
+
   pid_t pid = process_execute (cmd_line);
+
 	reset_pin_on_buffer (cmd_line, strlen (cmd_line) + 1);
+
   return pid;
 }
 
@@ -214,12 +222,16 @@ create (const char *file, unsigned initial_size)
 	if (strlen (file) == 0)
 		exit (FAILURE);
 	
+  /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (file, strlen(file) + 1);
+
   /* Use global lock to avoid the race condtion on file. */
 	lock_acquire (&filesys_lock);
   success = filesys_create (file, initial_size);
 	lock_release (&filesys_lock);
+
 	reset_pin_on_buffer (file, strlen(file) + 1);
+
 	return success;
 }
 
@@ -243,13 +255,17 @@ remove (const char *file)
 	if (strlen (file) == 0)
 		exit (FAILURE);
 
+  /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (file, strlen(file) + 1);
+
   /* File is removed regardless of whether it is open or closed. */
   /* Use global lock to avoid the race condtion on file. */
 	lock_acquire (&filesys_lock);
   success = filesys_remove ((const char*)file);
 	lock_release (&filesys_lock);
+
 	reset_pin_on_buffer (file, strlen(file) + 1);
+
 	return success;
 }
 
@@ -273,11 +289,14 @@ open (const char *file)
 	if (strlen (file) == 0)
 		return FAILURE;
 
+  /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (file, strlen(file) + 1);
+
   /* Use global lock to avoid the race condtion on file. */
 	lock_acquire (&filesys_lock);
   f = filesys_open (file);
 	lock_release (&filesys_lock);
+
 	reset_pin_on_buffer (file, strlen(file) + 1);
 
   /* fails to open the file. */
@@ -318,7 +337,9 @@ read (int fd, void* buffer, unsigned size)
 	unsigned i;
 	unsigned size_read;
 
-  /* Check whether the buffer passed by the user is valid. */
+  /* Check whether the buffer passed by the user is valid
+     and also check whether the given user address has
+     write permission. */
 	check_user_buffer (buffer, size, true);
 
   /* Invalid FD. */
@@ -328,9 +349,12 @@ read (int fd, void* buffer, unsigned size)
   /* FD is Standard Input Stream. */
   if (fd == 0)
 	{
+    /* Pinning the page associating with the given user address. */
 		set_pin_on_buffer (buffer, size);
+
 		for (i = 0; i < size ; i++)
 			*((uint8_t *)buffer + i) = input_getc();
+
 		reset_pin_on_buffer (buffer, size);
 		return size;
 	}
@@ -340,11 +364,15 @@ read (int fd, void* buffer, unsigned size)
   if (cur->fdt[fd] == NULL)
     return FAILURE;
 
+  /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (buffer, size);
+
 	lock_acquire (&filesys_lock);
   size_read = file_read (cur->fdt[fd], buffer, size);
 	lock_release (&filesys_lock);
+
 	reset_pin_on_buffer (buffer, size);
+
 	return size_read;
 }
 
@@ -366,7 +394,9 @@ write (int fd, const void *buffer, unsigned size)
   /* FD is Standard Output Stream. */
   if (fd == 1)
   {
+    /* Pinning the page associating with the given user address. */
 		set_pin_on_buffer (buffer, size);
+
     putbuf ((const char*)buffer, size);
 		reset_pin_on_buffer (buffer, size);
     return size;
@@ -377,11 +407,15 @@ write (int fd, const void *buffer, unsigned size)
   if (cur->fdt[fd] == NULL)
     return FAILURE;
 
+  /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (buffer, size);
+
 	lock_acquire (&filesys_lock);
   size_write = file_write (cur->fdt[fd], buffer, size);
 	lock_release (&filesys_lock);
+
 	reset_pin_on_buffer (buffer, size);
+
 	return size_write;
 }
 
@@ -525,7 +559,7 @@ check_user_address_at_stack (void *uaddr)
 }
 
 /* Checks whether the pointer passed by the user is valid.
- * If it not, EXIT(-1). */
+   If it not, EXIT(-1). */
 static void
 check_user_address (void* uaddr)
 {
@@ -550,8 +584,9 @@ check_user_address (void* uaddr)
 	}
 }
 
-/* Checks whether the BUFFER passed by the user is valid.
- * If it not, EXIT(-1). */
+/* Checks whether the BUFFER passed by the user is valid
+   and also checks whether the address has the given write permission.
+   If it not, EXIT(-1). */
 static void
 check_user_buffer (void* buffer, unsigned size, bool to_write)
 {
@@ -601,24 +636,6 @@ check_user_buffer (void* buffer, unsigned size, bool to_write)
       	exit (FAILURE);
 		}
   }
-}
-
-/* Converts the user virtual address to the kernel virtual address. */
-static void*
-uaddr_to_kaddr (void* uaddr)
-{
-	void *kaddr = NULL;
-	
-	/* check whether the user virtual address is valid. */
-	check_user_address (uaddr);
-
-	kaddr = pagedir_get_page (thread_current ()->pagedir, uaddr);
-
-	/* the user virtual address is unmapped. */
-	if (kaddr == NULL)
-		exit (FAILURE);
-	
-	return kaddr;
 }
 
 /* Copy arguments on user stack at kernel. */

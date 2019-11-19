@@ -253,10 +253,10 @@ process_activate (void)
 }
 
 /* When page fault occurs, allocate physical memory.
-   Load file in the disk to physical memory.
-   Use load_file (void *kaddr, struct vm_entry *vme)
-   Update the associated page table entry after loading into physical memory.
-   Use static bool install_page (void *upage, void *kpage, bool writable) */
+   Load file in the disk to physical memory if the faulted page is file,
+   or read a data from the disk (swap space) if the page swapped into disk,
+   or just allocate the page if the page fault occurs due to stack growth.
+   Update the associated page table entry. */
 bool
 handle_mm_fault (struct vm_entry *vme)
 {
@@ -269,24 +269,33 @@ handle_mm_fault (struct vm_entry *vme)
 
   switch (vme->type)
   {
+    /* Binary file. (code, data, bss) */
     case VM_BIN:
     {
+      /* Load a file into allocated page. */
       success = load_file (kpage, vme);
       break;
     }
+    /* File. */
     case VM_FILE:
     {
+      /* Load a file into allocated page. */
       success = load_file (kpage, vme);
       break;
     }
+    /* Swapped page. (stack, data) */
     case VM_ANON:
     {
+      /* Read a page from the disk(swap space). */
       swap_read_from_disk (vme->swap_index, kpage);
       success = true;
       break;
     }
+    /* Stack growth. */
     case VM_STACK_GROWTH:
     {
+      /* Do not need any loading.
+         Just change the type to be able to swap. */
       vme->type = VM_ANON;
       success = true;
       break;
@@ -299,6 +308,7 @@ handle_mm_fault (struct vm_entry *vme)
     return success;
   }
 
+  /* Updata the associated page table entry. */
   success = install_page (vme->vaddr, kpage, vme->writable);
 
   if (!success)
@@ -668,11 +678,13 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
 
         - ZERO_BYTES bytes at UPAGE + READ_BYTES must be zeroed.
 
-   The pages initialized by this function must be writable by the
-   user process if WRITABLE is true, read-only otherwise.
+   This function doesn't produce any page.
+   Pages will be allocated and initialize lazily.
+   To support this, this function produce VM_ENTRY which contains
+   information about page to be produced lazily.
 
-   Return true if successful, false if a memory allocation error
-   or disk read error occurs. */
+   Return true if the associating VM_ENTRYs are produced successful,
+   false if a memory allocation for VM_ENTRYs error. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
               uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
@@ -705,7 +717,10 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       success = insert_vme (&thread_current ()->vm, vme);
 
       if (!success)
+      {
+        free (vme);
         return false;
+      }
       /* Automatically removes the early produced vm_entry
          at process_exit(). */
 
@@ -719,7 +734,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 }
 
 /* Create a minimal stack by mapping a zeroed page at the top of
-   user virtual memory. */
+   user virtual memory. And also create a associating VM_ENTRY
+   for swap. */
 static bool
 setup_stack (void **esp) 
 {
@@ -755,6 +771,9 @@ setup_stack (void **esp)
     /* Using insert_vme (), add vm_entry to hash table. */
     success = insert_vme (&thread_current ()->vm, vme);
   }
+
+  if (!success)
+    free (vme);
   return success;
 }
 
