@@ -754,9 +754,8 @@ mmap_check (int fd, void *addr)
   if (read_bytes == 0)
     return NULL;
 
-  /* Check whether ADDR is valid, or not. */
-  /* If ADDRs are not pages aligned (ADDR is already in use),
-     return -1. (need consecutive free memory) */
+  /* If ADDRs should not be in used. If not, return -1.
+	   (need consecutive free memory) */
   for (offset = 0; offset < read_bytes; offset += PGSIZE)
   {
     vme = find_vme ((void *)((char *) addr + offset));
