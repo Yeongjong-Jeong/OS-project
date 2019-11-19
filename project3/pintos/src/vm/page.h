@@ -98,6 +98,7 @@ struct block *swap_block;
 struct lock swap_lock;
 
 void lru_init (void);
+void page_destroy (struct thread *cur);
 struct page *page_alloc (enum palloc_flags flag);
 void page_free (void *kaddr);
 void page_insert_to_lru_list (struct page* page);
@@ -105,8 +106,10 @@ void page_remove_from_lru_list (struct page* page);
 void swap_init (void);
 void setup_page (struct page *page, struct vm_entry *vme);
 void swap_choose_victim_and_free_page (void);
-void set_pin (void);
-void reset_pin (void);
+void set_pin_on_addr (void *vaddr);
+void set_pin_on_buffer (void *buffer, size_t size);
+void reset_pin_on_addr (void *vaddr);
+void reset_pin_on_buffer (void *buffer, size_t size);
 size_t swap_write_to_disk (void *kaddr);
 void swap_read_from_disk (size_t slot_index, void *kaddr);
 

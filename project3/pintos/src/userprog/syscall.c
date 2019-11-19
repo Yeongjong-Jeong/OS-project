@@ -19,11 +19,12 @@
 
 static void syscall_handler (struct intr_frame *);
 
-static void check_user_address (void* uaddr);
-static void check_user_buffer (void* buffer, unsigned size, bool to_write);
-static void* uaddr_to_kaddr (void* uaddr);
+static bool check_user_address_at_stack (void *uaddr);
+static void check_user_address (void *uaddr);
+static void check_user_buffer (void *buffer, unsigned size, bool to_write);
+static void* uaddr_to_kaddr (void *uaddr);
 
-static void copy_args (void* user_stack, int *args, int arg_num);
+static void copy_args (void *user_stack, int *args, int arg_num);
 
 static int fdt_insert (struct file *);
 static struct file *fdt_find (int fd);
@@ -48,6 +49,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 
   /* System call number. */
   system_call_number = *(int *) f->esp;
+	thread_current ()->esp = f->esp;
   
   switch (system_call_number)
   {
@@ -178,13 +180,11 @@ pid_t
 exec (const char *cmd_line)
 {
   /* Check whether the given string is valid or not. */
-  check_user_buffer ((void *) cmd_line, strlen(cmd_line)+1, false);
-
-  /* Converts the user virtual address to the physical kernel address. */
-	// void *kaddr = uaddr_to_kaddr ((void *)cmd_line);
-	void *kaddr = cmd_line;
+  check_user_buffer ((void *) cmd_line, strlen(cmd_line) + 1, false);
   
-  pid_t pid = process_execute ((const char *)kaddr);
+	set_pin_on_buffer (cmd_line, strlen (cmd_line) + 1);
+  pid_t pid = process_execute (cmd_line);
+	reset_pin_on_buffer (cmd_line, strlen (cmd_line) + 1);
   return pid;
 }
 
@@ -200,7 +200,6 @@ wait (pid_t pid)
 bool
 create (const char *file, unsigned initial_size)
 {
-	void *kaddr;
 	bool success;
 
   /* If the user pass the null pointer, exit(-1). */
@@ -209,18 +208,18 @@ create (const char *file, unsigned initial_size)
 
   /* Checks the address passed by the user. */
   /* If it's not valid, exit(-1). */
-	check_user_address ((void*)file);
-	//kaddr = uaddr_to_kaddr ((void *)file);
-	kaddr = file;
+	check_user_buffer ((void*)file, strlen (file) + 1, false);
 
   /* If the file name is empty, exit(-1). */
-	if (strlen (kaddr) == 0)
+	if (strlen (file) == 0)
 		exit (FAILURE);
-
+	
+	set_pin_on_buffer (file, strlen(file) + 1);
   /* Use global lock to avoid the race condtion on file. */
 	lock_acquire (&filesys_lock);
-  success = filesys_create ((const char*)kaddr, initial_size);
+  success = filesys_create (file, initial_size);
 	lock_release (&filesys_lock);
+	reset_pin_on_buffer (file, strlen(file) + 1);
 	return success;
 }
 
@@ -230,7 +229,6 @@ create (const char *file, unsigned initial_size)
 bool
 remove (const char *file)
 {
-	void *kaddr;
 	bool success;
 
   /* If the user pass the null pointer, exit(-1). */
@@ -239,19 +237,19 @@ remove (const char *file)
 
   /* Checks the address passed by the user. */
   /* If it's not valid, exit(-1). */
-	check_user_address ((void*)file);
-	// kaddr = uaddr_to_kaddr ((void *)file);
-	kaddr = file;
+	check_user_buffer ((void*)file, strlen (file) + 1, false);
 
   /* If the file name is empty, exit(-1). */
-	if (strlen (kaddr) == 0)
+	if (strlen (file) == 0)
 		exit (FAILURE);
 
+	set_pin_on_buffer (file, strlen(file) + 1);
   /* File is removed regardless of whether it is open or closed. */
   /* Use global lock to avoid the race condtion on file. */
 	lock_acquire (&filesys_lock);
-  success = filesys_remove ((const char*)kaddr);
+  success = filesys_remove ((const char*)file);
 	lock_release (&filesys_lock);
+	reset_pin_on_buffer (file, strlen(file) + 1);
 	return success;
 }
 
@@ -262,7 +260,6 @@ int
 open (const char *file)
 {
   struct file *f;
-	void *kaddr;
 
   /* If the user pass the null pointer, exit(-1). */
 	if (file == NULL)
@@ -270,18 +267,18 @@ open (const char *file)
 
   /* Checks the address passed by the user. */
   /* If it's not valid, exit(-1). */
-	check_user_address ((void *)file);
-	//kaddr = uaddr_to_kaddr ((void *)file);
-	kaddr = file;
+	check_user_buffer ((void *)file, strlen (file) + 1, false);
 
   /* If the file name is empty, exit(-1). */
-	if (strlen (kaddr) == 0)
+	if (strlen (file) == 0)
 		return FAILURE;
 
+	set_pin_on_buffer (file, strlen(file) + 1);
   /* Use global lock to avoid the race condtion on file. */
 	lock_acquire (&filesys_lock);
-  f = filesys_open (kaddr);
+  f = filesys_open (file);
 	lock_release (&filesys_lock);
+	reset_pin_on_buffer (file, strlen(file) + 1);
 
   /* fails to open the file. */
 	if (f == NULL)
@@ -320,12 +317,9 @@ read (int fd, void* buffer, unsigned size)
   struct thread *cur;
 	unsigned i;
 	unsigned size_read;
-	void *kaddr;
 
   /* Check whether the buffer passed by the user is valid. */
 	check_user_buffer (buffer, size, true);
-	// kaddr = uaddr_to_kaddr (buffer);
-	kaddr = buffer;
 
   /* Invalid FD. */
   if (fd == 1 || fd >= FDT_SIZE)
@@ -335,7 +329,7 @@ read (int fd, void* buffer, unsigned size)
   if (fd == 0)
 	{
 		for (i = 0; i < size ; i++)
-			*((uint8_t *)kaddr + i) = input_getc();
+			*((uint8_t *)buffer + i) = input_getc();
 		return size;
 	}
 
@@ -344,9 +338,11 @@ read (int fd, void* buffer, unsigned size)
   if (cur->fdt[fd] == NULL)
     return FAILURE;
 
+	set_pin_on_buffer (buffer, size);
 	lock_acquire (&filesys_lock);
-  size_read = file_read (cur->fdt[fd], kaddr, size);
+  size_read = file_read (cur->fdt[fd], buffer, size);
 	lock_release (&filesys_lock);
+	reset_pin_on_buffer (buffer, size);
 	return size_read;
 }
 
@@ -358,12 +354,9 @@ write (int fd, const void *buffer, unsigned size)
 {
   struct thread *cur;
 	int size_write;
-	void *kaddr;
 
   /* Check whether the buffer passed by the user is valid. */
 	check_user_buffer ((void*)buffer, size, false);
-	// kaddr = uaddr_to_kaddr ((void*)buffer);
-	kaddr = buffer;
 
   if (fd <= 0 || fd >= FDT_SIZE)
     exit (FAILURE);
@@ -371,7 +364,7 @@ write (int fd, const void *buffer, unsigned size)
   /* FD is Standard Output Stream. */
   if (fd == 1)
   {
-    putbuf ((const char*)kaddr, size);
+    putbuf ((const char*)buffer, size);
     return size;
   }
 	
@@ -380,9 +373,11 @@ write (int fd, const void *buffer, unsigned size)
   if (cur->fdt[fd] == NULL)
     return FAILURE;
 
+	set_pin_on_buffer (buffer, size);
 	lock_acquire (&filesys_lock);
-  size_write = file_write (cur->fdt[fd], kaddr, size);
+  size_write = file_write (cur->fdt[fd], buffer, size);
 	lock_release (&filesys_lock);
+	reset_pin_on_buffer (buffer, size);
 	return size_write;
 }
 
@@ -510,6 +505,21 @@ munmap (mapid_t mapid)
   munmap_one_entry (mmfile);
 }
 
+/* Check whether the pointer passed by the user is
+   in the allowable stack area for the user.
+	 If the pointer is in that area, return true.
+	 Otherwise, return false. */
+static bool
+check_user_address_at_stack (void *uaddr)
+{
+	void *MIN_LIMIT = (void *) (0xC0000000 - 8 * 1024 * 1024);
+	void *MAX_LIMIT = (void *) (0xC0000000);
+
+	if (uaddr <= MAX_LIMIT && uaddr >= MIN_LIMIT)
+		return true;
+	return false;
+}
+
 /* Checks whether the pointer passed by the user is valid.
  * If it not, EXIT(-1). */
 static void
@@ -525,10 +535,15 @@ check_user_address (void* uaddr)
   if (uaddr < USER_VADDR_LOW_BOUND)
     exit (FAILURE);
 
-  /* Check whether there's the corresponding VM_ENTRY
-     with the user virtual address or not. If not, exit(-1). */
+	/* Check whether there's the corresponding VM_ENTRY
+     with the user virtual address or not.
+		 If not, it could be in the possible stack area of the user.
+		 So check whether it is. If it's not, exit(-1). */
   if (find_vme (uaddr) == NULL)
-    exit (FAILURE);
+	{
+		if (!check_user_address_at_stack (uaddr))
+    	exit (FAILURE);
+	}
 }
 
 /* Checks whether the BUFFER passed by the user is valid.
@@ -537,27 +552,50 @@ static void
 check_user_buffer (void* buffer, unsigned size, bool to_write)
 {
 	unsigned i;
+	struct vm_entry *vme;
 
   /* The size of buffer can be larger than the size of a page. */
 	for (i = 0; i < size; i = i + PGSIZE) /* i = i + PGSIZE */
   {
     /* Check whether the buffer is valid user virtual address. */
 		check_user_address ((void*) ((char*) buffer + i));
+
     /* Check whether the address given as buffer is writable or not.
-       If not, exit(-1). */
-    
+			 If the corresponding VM_ENTRY doesn't exist,
+			 then check whether the buffer is
+			 in the possible stack area where the user can expand.
+       If VM_ENTRY exists, check the write permission from the VM_ENTRY.
+			 If there's no permission, exit(-1). */
 		if (to_write)
     {
-      if (find_vme (buffer + i)->writable != to_write)
-        exit (FAILURE);
+			vme = find_vme (buffer + i);
+			if (vme == NULL)
+			{
+				if (!check_user_address_at_stack (buffer + i))
+					exit (FAILURE);
+			}
+			else
+			{
+      	if (vme->writable != to_write)
+        	exit (FAILURE);
+			}
     }
   }
 
-  check_user_address ((void*) ((char*) buffer + size - 1));
+	check_user_address ((void*) ((char*) buffer + size - 1));
   if (to_write)
   {
-    if (find_vme (buffer + size - 1)->writable != to_write)
-      exit (FAILURE);
+		vme = find_vme (buffer + size -1);
+		if (vme == NULL)
+		{
+			if (!check_user_address_at_stack (buffer + size - 1))
+				exit (FAILURE);
+		}
+		else
+		{
+    	if (vme->writable != to_write)
+      	exit (FAILURE);
+		}
   }
 }
 

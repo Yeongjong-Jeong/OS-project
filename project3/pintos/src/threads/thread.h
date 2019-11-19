@@ -131,6 +131,7 @@ struct thread
     struct hash vm;                     /* Virtual Address Space manager. */
     struct list mmap_list;              /* List of mmap_file. */
     int next_map_id;                    /* Map_id to be given. */
+		void *esp;													/* Stack pointer(kernel page_fault) */
 #endif
 
     /* Owned by thread.c. */

@@ -168,11 +168,19 @@ page_fault (struct intr_frame *f)
       /* Allocate a page using page fault handler - handle_mm_fault (). */
       /* And also update the page table. */
       if (vme != NULL)
+			{
 			  success = handle_mm_fault (vme);
+			}
       /* If VM_ENTRY is NULL, this means it means we need expand stack. */
       else
       {
-        vme = stack_grow (fault_addr, f->esp);
+				/* Page fault at user mode. */
+				if (user)
+        	vme = stack_grow (fault_addr, f->esp);
+				/* Page fault at kernel mode. */
+				else
+					vme = stack_grow (fault_addr, thread_current ()->esp);
+
         if (vme == NULL)
           success = false;
         else
@@ -183,7 +191,7 @@ page_fault (struct intr_frame *f)
 				return ;
     }
   }
-
+		
   /* Invalid access.
      - Not a valid user address or a kernel address.
      - Permission error. (attempt to write to the read-only page. */

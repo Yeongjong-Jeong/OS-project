@@ -208,6 +208,8 @@ process_exit (void)
   mmap_destroy (&cur->mmap_list);
   /* Delete all VM_ENTRYs associating with this thread. */
   vm_destroy (&cur->vm);
+	/* Delete all pages associating with this thread. */
+	page_destroy (cur);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -259,7 +261,7 @@ bool
 handle_mm_fault (struct vm_entry *vme)
 {
   bool success = false;
-  struct page *page = page_alloc (PAL_USER);
+  struct page *page = page_alloc (PAL_USER | PAL_ZERO);
   uint8_t *kpage = page->kaddr;
 
   if (kpage == NULL)

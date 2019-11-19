@@ -115,7 +115,10 @@ setup_vm_entry (struct vm_entry *e, uint8_t type, bool writable,
   e->type = type;
   e->writable = writable;
   e->in_memory = in_memory;
-	e->pin_flag = false;
+	if (intr_context ())
+		e->pin_flag = true;
+	else
+		e->pin_flag = false;
   e->vaddr = uvaddr;
   e->file = file;
   e->offset = offset;
@@ -148,6 +151,7 @@ static void _setup_page (struct page* page, void *kpage);
 static void page_page_free (struct page* page);
 static size_t swap_find_empty_slot_and_flip (void);
 static void swap_reset_bitmap (size_t slot_index);
+static struct list_elem *swap_choose_victim (void);
 
 /* Initialize the global variable LRU_LIST */
 void
@@ -155,6 +159,29 @@ lru_init (void)
 {
   list_init (&lru_list);   /* Initialize LRU_LIST. */
   lock_init (&lru_lock);   /* Initialize LRU_LOCK. */
+}
+
+void
+page_destroy (struct thread *cur)
+{
+	struct list_elem *e, *de;
+	struct page* page;
+
+	/* Find the PAGE entry whose KADDR is same
+     with the input KADDR in the LRU_LIST. */
+  for (e = list_begin (&lru_list); e != list_end (&lru_list); )
+  {
+    page = list_entry (e, struct page, elem);
+    if (page->thread == cur)
+    {
+			de = e;
+			e = list_next (e);
+			list_remove (de);
+			free (page);
+    }
+		else
+			e = list_next (e);
+  }
 }
 
 /* Allocate a page and return PAGE structure associating with the page.
@@ -257,11 +284,12 @@ void
 swap_choose_victim_and_free_page (void)
 {
   /* FIFO: Just choose the first page in the LRU_LIST. */
-  struct list_elem *e = list_begin (&lru_list);
-	e = list_next (e);
-	e = list_next (e);
-	e = list_next (e);
-	e = list_next (e);
+  // struct list_elem *e = list_begin (&lru_list);
+	// e = list_next (e);
+	// e = list_next (e);
+	// e = list_next (e);
+	// e = list_next (e);
+	struct list_elem *e = swap_choose_victim ();
 
   struct page *page = list_entry (e, struct page, elem);
   size_t index_to_swap = 0;
@@ -316,36 +344,41 @@ swap_choose_victim_and_free_page (void)
 	lock_acquire (&lru_lock);
 }
 
+/* Set the PIN FLAG on the page corresponding to the given address. */
 void
-set_pin (void)
+set_pin_on_addr (void *vaddr)
 {
-	struct hash *vm = &thread_current ()->vm;
-	struct hash_iterator i;
-	struct hash_elem *e;
 	struct vm_entry *vme;
-
-	hash_first (&i, vm);
-	while (e = hash_next (&i))
-	{
-		vme = hash_entry (e, struct vm_entry, elem);
+	vme = find_vme (vaddr);
+	if (vme != NULL)
 		vme->pin_flag = true;
-	}
 }
 
 void
-reset_pin (void)
+set_pin_on_buffer (void *buffer, size_t size)
 {
-	struct hash *vm = &thread_current ()->vm;
-	struct hash_iterator i;
-	struct hash_elem *e;
-	struct vm_entry *vme;
+	int i;
 
-	hash_first (&i, vm);
-	while (e = hash_next (&i))
-	{
-		vme = hash_entry (e, struct vm_entry, elem);
+	for (i = 0; i < size; i += PGSIZE)
+		set_pin_on_addr (buffer + i * PGSIZE);
+}
+
+void
+reset_pin_on_addr (void *vaddr)
+{
+	struct vm_entry *vme;
+	vme = find_vme (vaddr);
+	if (vme != NULL)
 		vme->pin_flag = false;
-	}
+}
+
+void
+reset_pin_on_buffer (void *buffer, size_t size)
+{
+	int i;
+
+	for (i = 0; i < size; i += PGSIZE)
+		reset_pin_on_addr (buffer + i * PGSIZE);
 }
 
 size_t
@@ -386,7 +419,7 @@ swap_read_from_disk (size_t slot_index, void *kaddr)
   /* ASSERT () : whether the slock_index is in used or not.
      If the slot_index is not in used, ERROR occurs. */
 
-  /* block_read (struct block *block, block_sector_t sector, void *buffer) */
+	lock_acquire (&swap_lock);
   for (i = 0; i < SECTORS_PER_PAGE; i++)
   {
     block_read (swap_block, sector + i,
@@ -395,6 +428,7 @@ swap_read_from_disk (size_t slot_index, void *kaddr)
 
   /* Reset the bitmap to be unused. */
   swap_reset_bitmap (slot_index);
+	lock_release (&swap_lock);
 }
 
 void
@@ -439,6 +473,45 @@ static void
 swap_reset_bitmap (size_t slot_index)
 {
   bitmap_reset (swap_bitmap, slot_index);
+}
+
+/* Choose a victim to be evicted by page replacement policy.
+   Page replacement policy is following the clock algorithm
+   which approximates LRU policy and also uses information about dirty bit. */
+static struct list_elem *
+swap_choose_victim (void)
+{
+  struct page *page = NULL;
+  struct list_elem *lru_clock = NULL;
+  
+  for (lru_clock = list_begin (&lru_list); lru_clock != list_end (&lru_list);
+			 lru_clock = list_next (lru_clock))
+  {
+    page = list_entry (lru_clock, struct page, elem);
+
+    /* Check whether the page is accessed or not. */
+    if (pagedir_is_accessed (page->thread->pagedir, page->vme->vaddr))
+      pagedir_set_accessed (page->thread->pagedir, page->vme->vaddr, false);
+    else
+		{
+		 	/* If the page is pinned, do not choose this page as victim. */
+			if (page->vme->pin_flag == false)
+				return lru_clock; /* find a un-accessed page with no dirty bit. */
+		}
+  }
+	
+  /* From now one, access bit of every page set to 0,
+		 so just choose the first page which is not pinned in LRU_LIST. */
+	for (lru_clock = list_begin (&lru_list); lru_clock != list_end (&lru_list);
+			 lru_clock = list_next (lru_clock))
+	{
+		page = list_entry (lru_clock, struct page, elem);
+		if (page->vme->pin_flag == false)
+			return lru_clock;
+	}
+
+	/* Default: This doesn't happen. */
+	return list_begin (&lru_list);
 }
 
 
@@ -609,18 +682,21 @@ static bool check_stack (void *vaddr, void *esp);
 struct vm_entry *
 stack_grow (void *vaddr, void *esp)
 {
-  uint8_t *kpage, *upage;
+  uint8_t *upage;
   bool success = false;
   struct vm_entry *vme;
 
   if (!check_stack (vaddr, esp))
-    return false;
+    return NULL;
 
   /* Round down the vaddr to be a user virtual page address. */
   upage = pg_round_down (vaddr);
 
   /* Create VM_ENTRY. */
   vme = (struct vm_entry *) malloc (sizeof (struct vm_entry));
+
+	if (vme == NULL)
+		return NULL;
 
   /* Set up VM_ENTRY members. */
   setup_vm_entry (vme, VM_STACK_GROWTH, true, false,
