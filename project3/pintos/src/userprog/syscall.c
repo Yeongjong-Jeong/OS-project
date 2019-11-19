@@ -328,8 +328,10 @@ read (int fd, void* buffer, unsigned size)
   /* FD is Standard Input Stream. */
   if (fd == 0)
 	{
+		set_pin_on_buffer (buffer, size);
 		for (i = 0; i < size ; i++)
 			*((uint8_t *)buffer + i) = input_getc();
+		reset_pin_on_buffer (buffer, size);
 		return size;
 	}
 
@@ -364,7 +366,9 @@ write (int fd, const void *buffer, unsigned size)
   /* FD is Standard Output Stream. */
   if (fd == 1)
   {
+		set_pin_on_buffer (buffer, size);
     putbuf ((const char*)buffer, size);
+		reset_pin_on_buffer (buffer, size);
     return size;
   }
 	
