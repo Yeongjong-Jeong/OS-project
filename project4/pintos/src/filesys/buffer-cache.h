@@ -21,7 +21,7 @@ struct buffer_head
 
 
 /* Functions - Buffer cache. */
-void bc_init (void);
+void bc_init ();
 void bc_destroy (void);
 void bc_flush (struct buffer_head *bh);
 void bc_flush_all (void); /* need? */

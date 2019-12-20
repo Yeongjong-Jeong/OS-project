@@ -13,7 +13,7 @@ struct buffer_head *bh_table;
 int lru_clock = 0;
 struct lock lru_lock;
 
-static void bt_init (void);
+static void bt_init ();
 static void bt_destroy (void);
 static struct buffer_head *bc_request (void);
 static void bc_evict (struct buffer_head *bh);
@@ -40,7 +40,7 @@ bc_init (void)
 
 /* Initialize the BUFFER_HEAD_TABLE. */
 static void
-bt_init (void)
+bt_init ()
 {
   int i = 0;
   for (i = 0; i < NUM_BUFFER_CACHE; i++)
@@ -89,7 +89,6 @@ bc_flush_all (void)
     /* If the buffer cache is dirty, flush it to disk. */
     if (bh_table[i].dirty == true)
       bc_flush (bh_table + i);
-    /* No need LRU clock setting. */
   }
 }
 
@@ -270,6 +269,7 @@ bh_setup (struct buffer_head *bh, bool new)
   bh->dirty = false;
   bh->access = false;
   bh->inode = NULL;
+  bh->sector = 0xFFFFFFFF;
   if (new)
   {
     bh->cache = malloc (BLOCK_SECTOR_SIZE);

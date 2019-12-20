@@ -31,6 +31,9 @@ filesys_init (bool format)
   if (format) 
     do_format ();
 
+  bc_destroy ();
+  bc_init ();
+
   free_map_open ();
 }
 
