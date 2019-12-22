@@ -57,6 +57,8 @@ bc_destroy (void)
   free (bh_table);
 }
 
+/* Destroy the buffer cache table.
+   This allocates all buffer cache memory. */
 static void
 bt_destroy (void)
 {
@@ -98,7 +100,6 @@ bc_flush_all (void)
 struct buffer_head *
 bc_find_bh (block_sector_t sector)
 {
-  // printf ("bc_find_bh () : enter\n");
   int i;
   for (i = 0; i < NUM_BUFFER_CACHE; i++)
   {
@@ -107,13 +108,11 @@ bc_find_bh (block_sector_t sector)
     /* Return the BUFFER HEAD with lock acquired. */
     if (bh_table[i].sector == sector)
     {
-      // printf ("bc_find_bh () : success\n");
       return &bh_table[i];
     }
 
     lock_release (&bh_table[i].lock);
   }
-  // printf ("bc_find_bh () : exit with NULL\n");
 
   return NULL;
 }
@@ -148,6 +147,7 @@ bc_request (void)
   return cur;
 }
 
+/* Evict the given buffer cache. */
 static void
 bc_evict (struct buffer_head *bh)
 {
@@ -267,7 +267,9 @@ bc_write (void *buffer_, off_t bytes_written, block_sector_t sector_idx,
   lock_release (&bh->lock); // Release the lock.
 }
 
-/* NEW is 1 -> new initialize, NEW is 0 -> just reset. */
+/* Setup the structure BUFFER_HEAD, 
+   If NEW is 1, newly initialize.
+   If NEW is 0, just reset. */
 static void
 bh_setup (struct buffer_head *bh, bool new)
 {

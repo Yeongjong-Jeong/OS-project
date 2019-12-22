@@ -7,6 +7,7 @@
 
 struct bitmap;
 
+/* Three types of data blocks. */
 enum BLOCK_TYPE {DIRECT, SINGLE, DOUBLE};
 
 /* Maximum allowable number of indices in indirect block. */
@@ -21,11 +22,22 @@ enum BLOCK_TYPE {DIRECT, SINGLE, DOUBLE};
 /* Maximum file size. */
 #define MAX_FILE_SIZE 8388608  // 8MB = 8 * 1024 * 1024
 
+/* Indirect data block. */
 typedef struct _block_indirect_t
 {
   block_sector_t block[TOTAL_INDEX];
 } block_indirect_t;
 
+/* Sector information.
+   BLOCKTYPE indicate whether the data block can be accessed by
+   directly, or single/double indirectly.
+   In case of a direct data block, the data block can be accessed by 
+   the index FIRST from the disk inode.
+   In case of a single indirect data block, the data block can be accessed by
+   the index FIRST from the indirect data block.
+   In case of a double indiect data block, the data block can be accessed by
+   the index FIST from the first indirect data block, and the index SECOND
+   from the second indirect data block. */
 typedef struct _block_sectors_t
 {
   enum BLOCK_TYPE type;

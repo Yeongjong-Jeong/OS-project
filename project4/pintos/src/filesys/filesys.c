@@ -28,15 +28,6 @@ struct dir_entry
   bool in_use;
 };
 
-// An open file.
-//struct file 
-//  {
-//    struct inode *inode;        /* File's inode. */
-//    off_t pos;                  /* Current position. */
-//    bool deny_write;            /* Has file_deny_write() been called? */
-//  };
-//
-
 static void do_format (void);
 static struct dir *path_parser (char *path, bool *path_dir, bool *missing);
 static struct dir *start_dir (char *path, int *jump);
@@ -56,12 +47,14 @@ filesys_init (bool format)
   inode_init ();
   free_map_init ();
 
-  /* Allocate the memory for buffer cache and handler and initialize it. */
+  /* Allocate the memory for buffer cache and handler
+     and initialize it. */
   bc_init ();
 
   if (format) 
     do_format ();
 
+  /* Reset the buffer cache.*/
   bc_destroy ();
   bc_init ();
 
@@ -71,11 +64,12 @@ filesys_init (bool format)
   thread_current ()->cur_dir = dir_open_root ();
 }
 
-/* Shuts down the file system module, writing any unwritten data
-   to disk. */
+/* Shuts down the file system module,
+   writing any unwritten data to disk. */
 void
 filesys_done (void) 
 {
+  /* Flush and deallocate all buffer cache. */
   bc_destroy ();
   free_map_close ();
 }
@@ -88,11 +82,17 @@ bool
 filesys_create (const char *name, off_t initial_size) 
 {
   block_sector_t inode_sector = 0;
+
+  /* Extract the file name from the given input NAME.
+     This should be deallocated. */
   char *file_name = get_file_name (name);
   bool path_dir, missing;
+
+  /* Extract the directory from the givne input NAME. */
   struct dir *dir = path_parser (name, &path_dir, &missing);
 
-  /* File is already exists, but the file is directory. */
+  /* File is already exists, but the file is directory.
+     Therefore, this should be failed. */
   if (!missing && path_dir)
     return false;
 
@@ -118,14 +118,20 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
+  /* Extract the file name from the given input NAME.
+     This should be deallocated. */
   char *file_name = get_file_name (name); // must deallocate.
   bool path_dir, missing;
+
+  /* Extract the directory from the givne input NAME. */
   struct dir *dir = path_parser (name, &path_dir, &missing);
   struct inode *inode = NULL;
 
+  /* No such directory. -> failed. */
   if (dir == NULL)
     return NULL;
 
+  /* No file named NAME exists. -> failed. */
   if (missing)
   {
     dir_close (dir);
@@ -140,7 +146,7 @@ filesys_open (const char *name)
     free (dir);
     return file_open (inode);
   }
-  else
+  else /* ordinary file. */
   {
     if (!dir_lookup (dir, file_name, &inode))
     {
@@ -151,9 +157,9 @@ filesys_open (const char *name)
   }
 
   dir_close (dir);
-  free (file_name);  //
+  free (file_name);  /* must be deallocated. */
 
-  return file_open (inode);
+  return file_open (inode); // a ordinary file.
 }
 
 /* Deletes the file named NAME.
@@ -163,14 +169,19 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
+  /* Extract the file name from the given input NAME.
+     This should be deallocated. */
   char *file_name = get_file_name (name); // must deallocate.
   bool path_dir, missing;
+
+  /* Extract the directory from the givne input NAME. */
   struct dir *dir = path_parser (name, &path_dir, &missing);
-  struct dir *parent = NULL;
+  struct dir *parent = NULL; /* parent directory. */
   struct inode *inode = NULL;
   bool success = false;
   enum intr_level old_level;
 
+  /* If no such directory, failed. */
   if (dir == NULL)
   {
     dir_close (dir);
@@ -185,6 +196,7 @@ filesys_remove (const char *name)
   {
     if (dir_is_empty (dir_get_inode (dir)))
     {
+      /* Go to the parent directory. */
       if (!dir_lookup (dir, "..", &inode))
       {
         success = false;
@@ -198,6 +210,9 @@ filesys_remove (const char *name)
         if (inode_get_inumber (dir_get_inode (dir))
             == inode_get_inumber (dir_get_inode (thread_current ()->cur_dir)))
         {
+          /* Set the working directory to NULL,
+             and set the parent directory which reprensents
+             the working directory is removed. */
           thread_current ()->cur_dir = NULL;
           thread_current ()->parent_dir = parent;
         }
@@ -224,72 +239,58 @@ filesys_remove (const char *name)
   return success;
 }
 
+/* Change the current working directory to the given
+   input directory name DIR. 
+   If success, return TRUE.
+   Otherwise, return FALSE. */
 bool
 filesys_chdir (const char *dir)
 {
   struct thread *cur = thread_current ();
   bool path_dir, missing;
   struct directory *directory = NULL;
-  // struct inode *inode = NULL;
-  // char *dir_name = NULL;
   enum intr_level old_level;
 
+  /* Extract the directory from the givne input NAME. */
   directory = path_parser (dir, &path_dir, &missing);
-  // dir_name = get_file_name (dir); // must deallocate.
   if (directory == NULL)
     return false;
 
   if (missing)
     return false;
 
-  // printf ("filesys_chdir (): directory_name {%s}\n", dir_name);
-
   old_level = intr_disable ();
 
-  /*
-  if (!dir_lookup (directory, dir_name, &inode))
-  {
-    dir_close (directory);
-    // free (dir_name);
-
-    printf ("filesys_chdir (): no such directory\n");
-    return false;
-  }
-
-  if (!inode_is_dir (inode))
-  {
-    dir_close (directory);
-    // free (dir_name);
- 
-    printf ("filesys_chdir (): not a directory\n");
-    return false;
-  }
-  */
-
-  // dir_close (directory);
+  /* Close the current directory. */
   dir_close (cur->cur_dir);
-  // cur->cur_dir = dir_open (inode);
+
+  /* Change the curent directory. */
   cur->cur_dir = directory;  
 
   intr_set_level (old_level);
-
-  // free (dir_name);
   
   return true;
 }
 
+/* Make the directory named as given input DIR.
+   If success, return TRUE.
+   Otherwise, return FALSE. */
 bool
 filesys_mkdir (const char *dir)
 {
   block_sector_t inode_sector = 0;
   bool path_dir, missing;
+
+  /* Extract the directory name from the given input NAME.
+     This should be deallocated. */
   char *file_name = get_file_name (dir);
+
+  /* Extract the directory from the givne input NAME. */
   struct dir *parent = path_parser (dir, &path_dir, &missing);
 
+  /* Create the directory with 16 directory entries. */
   bool success = (dir != NULL
                   && free_map_allocate (1, &inode_sector)
-                  //&& inode_create (inode_sector, 
-                  //                 16 * sizeof (struct dir_entry), true)
                   && dir_create (inode_sector, 16)
                   && dir_add (parent, file_name, inode_sector));
   if (!success && inode_sector != 0) 
@@ -297,21 +298,24 @@ filesys_mkdir (const char *dir)
     free_map_release (inode_sector, 1);
   }
 
-  /* Insert directory entries which represent the current directory,
-     and the parent directory. */
+  /* Insert directory entries for '.' and '..'
+     which represent the current directory, and the parent directory. */
   if (!setup_dir (inode_sector, inode_get_inumber (dir_get_inode (parent))))
   {
     free_map_release (inode_sector, 1);
     success = false;
   }
-  
-  // dir_close (dir);
 
   free (file_name);
 
   return success;
 }
 
+/* Read the given input directory as file of file descriptor.
+   And then return the file name (a ordinary file/directory)
+   to the given input NAME.
+   If success, return TRUE.
+   Otherwise, return FALSE. */
 bool
 filesys_readdir (int fd, char *name)
 {
@@ -322,6 +326,7 @@ filesys_readdir (int fd, char *name)
   bool success = false;
 	enum intr_level old_level = intr_disable ();
 
+  /* Bring the file information from the file descriptor. */
   file = thread_current ()->fdt[fd];
 	intr_set_level (old_level);
   
@@ -329,28 +334,35 @@ filesys_readdir (int fd, char *name)
   if (! inode_is_dir (file->inode))
     return success;
 
+  /* Open a directory. */
   dir = dir_open (file->inode);
   if (dir == NULL)
     return success;
 
+  /* Set a position. */
   dir->pos = file->pos;
 
   while (!success)
   {
     success = dir_readdir (dir, name_);
-    file->pos = dir->pos;
+    file->pos = dir->pos;  // set back a position information.
     if (!success) // no more entires.
       break;
+
+    /* '.' and '..' is just for the current directory and 
+       the parent directory. These should not be read. */
     if (strcmp (name_, ".") == 0 || strcmp (name_, "..") == 0)
       success = false;
   }
 
+  /* Pass the file name. */
   if (success)
     strlcpy (name, name_, strlen (name_) + 1);
 
   return success;
 }
 
+/* Return a inode number of the given input file descriptor. */
 int
 filesys_inumber (int fd)
 {
@@ -381,7 +393,11 @@ do_format (void)
 /* Examine the given PATH, and parse the PATH
    to access to the associating directory.
    Return directory associated with path.
-   The caller must close received directory. */
+   The caller must close received directory.
+   PATH_DIR represents whether the received input PATH is
+   a directory or not.
+   MISSING represents whether the file/directory
+   represented by PATH is missing or not. */
 static struct dir *
 path_parser (char *path, bool *path_dir, bool *missing)
 {
@@ -408,21 +424,24 @@ path_parser (char *path, bool *path_dir, bool *missing)
 
   *missing = false;
 
+  /* No more sub directory. */
   if (strlen (path) == jump)
     return cur;
 
+  /* Go to the sub directory. */
   for (token = strtok_r (path_ + jump, "/", &save_ptr); token != NULL;
        token = strtok_r (NULL, "/", &save_ptr))
   {
     /* If there's no matching directory, return NULL. */
     if (!dir_lookup (cur, token, &inode))
     {
+      /* The case when the new file is created. */
       if (strtok_r (NULL, "/", &save_ptr) == NULL)
       {
         *missing = true;
         break;
       }
-      else
+      else  /* No directory exists, return NULL. */
       {
         if (cur != NULL)
           dir_close (cur);
@@ -430,12 +449,14 @@ path_parser (char *path, bool *path_dir, bool *missing)
       }
     }
 
+    /* The current traversing file is a directory. */
     if (inode_is_dir (inode))
     {
       dir_close (cur);
       cur = dir_open (inode);
       *path_dir = true;
     }
+    /* The current traversing file is a ordinary file. */
     else
     {
       inode_close (inode);
@@ -447,13 +468,20 @@ path_parser (char *path, bool *path_dir, bool *missing)
   return cur;
 }
 
-/* The caller must close received directory. */
+/* Return the base directory.
+   If PATH starts with ./, return the current directory.
+   If PATH starts with ../, return the parent directory.
+   If PATH starts with /, return the root directory.
+   If PATH just starts with name, return the current directory.
+   JUMP is a byte offset which is the starting point of
+   the relative path from the OUTPUT DIR.
+   The caller must close received directory. */
 static struct dir *
 start_dir (char *path, int *jump)
 {
   struct dir *cur = NULL;
   struct inode *inode = NULL;
-  char name[] = "..";
+  char name[] = "..";  // parent directory.
   char path_[strlen (path) + 1];
   char *token, *save_ptr;
 
@@ -499,6 +527,7 @@ start_dir (char *path, int *jump)
     token = strtok_r (path_, "/", &save_ptr);
     *jump = strlen (token) + 1;
   }
+  /* only just '.' -> return current directory. */
   else if (path[0] == '.')
   {
     cur = dir_reopen (thread_current ()->cur_dir);
@@ -512,6 +541,7 @@ start_dir (char *path, int *jump)
     {
       return NULL;
     }
+    /* Otherwise, return the current directory. */
     cur = dir_reopen (thread_current ()->cur_dir);
     *jump = 0;
   }
@@ -519,7 +549,8 @@ start_dir (char *path, int *jump)
   return cur;
 }
 
-/* The call must deallocate the received string literal. */
+/* Extract the file name from the given input PATH.
+   The call must deallocate the received string literal. */
 static char *
 get_file_name (char *path)
 {
@@ -560,6 +591,7 @@ get_file_name (char *path)
     jump = 0;
   }
 
+  /* Extract a file name. (which is in the last part of PATH.) */
   strlcpy (path_, path, strlen (path) + 1);
 
   for (token = strtok_r (path_ + jump, "/", &save_ptr); token != NULL;
@@ -574,6 +606,8 @@ get_file_name (char *path)
   return file_name;
 }
 
+/* Set up a directory
+   for base directory entries '.' and '..'. */
 static bool
 setup_dir (block_sector_t current, block_sector_t parent)
 {

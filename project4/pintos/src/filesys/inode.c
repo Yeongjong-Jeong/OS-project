@@ -120,10 +120,6 @@ byte_to_sector (struct inode *inode, off_t pos)
   }
 }
 
-
-
-
-
 /* List of open inodes, so that opening a single inode twice
    returns the same `struct inode'. */
 static struct list open_inodes;
@@ -138,6 +134,7 @@ inode_init (void)
 /* Initializes an inode with LENGTH bytes of data and
    writes the new inode to sector SECTOR on the file system
    device.
+   If create directory, set IS_DIR to TRUE.
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
 bool
@@ -155,10 +152,12 @@ inode_create (block_sector_t sector, off_t length, bool is_dir)
   disk_inode = calloc (1, sizeof *disk_inode);
   if (disk_inode != NULL)
     {
+      /* Setup. */
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
       disk_inode->is_dir = is_dir;
 
+      /* Allocate the data block to the given inode. */
       if (length > 0)
         inode_append (disk_inode, 0, length);
       bc_write (disk_inode, 0, sector, 0, BLOCK_SECTOR_SIZE);
@@ -177,7 +176,6 @@ inode_create (block_sector_t sector, off_t length, bool is_dir)
 struct inode *
 inode_open (block_sector_t sector)
 {
-
   struct list_elem *e;
   struct inode *inode;
 
@@ -205,6 +203,8 @@ inode_open (block_sector_t sector)
   inode->deny_write_cnt = 0;
   inode->removed = false;
 
+  /* Copy the contents of disk inode
+     to in-memory inode. */
   inode_to_disk_inode (inode);
 
   lock_init (&inode->lock);
@@ -248,6 +248,10 @@ inode_close (struct inode *inode)
         {
           inode_free_data_all (inode);
           struct buffer_head *bh = bc_find_bh (inode->sector);
+          /* If the data block is cached,
+             bc_find_bh returns BH with lock.
+             So should be released its lock.
+             For deallocate the block, flush it. */
           if (bh != NULL)
       	    bc_flush (bh);
           lock_release (&bh->lock);
@@ -281,6 +285,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       /* Disk sector to read, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
 
+      /* Error check. (If the offset is not allocated to inode.) */
       if (sector_idx == SECTOR_ERROR)
         break;
 
@@ -296,9 +301,9 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       if (chunk_size <= 0)
         break;
 
+      /* Read the block from the buffer cache. */
       bc_read (buffer, bytes_read, sector_idx, sector_ofs, chunk_size);
 
-            
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
@@ -327,13 +332,18 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   if (inode_disk == NULL)
     return 0;
 
+  /* Before appending the data block, acquire the associating lock. */
   lock_acquire (&inode->lock);
   /* If the write access try to extend the file size,
      append the data block into DISK_INODE. */
   if (offset + size > inode_disk->length)
   {
     inode_append (inode_disk, offset, size);
+
+    /* Update the contents of disk inode. */
     inode_disk->length = (offset + size);
+    
+    /* Write the contents of disk inode back to the disk. */
     bc_write (inode_disk, 0, inode->sector, 0, BLOCK_SECTOR_SIZE);
     inode_to_disk_inode (inode); // Update in-memory inode.
   }
@@ -355,8 +365,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       if (chunk_size <= 0)
         break;
 
+      /* Write the data block to the buffer cache. */
       bc_write ((void *)buffer, bytes_written, sector_idx,
-		sector_ofs, chunk_size);
+		            sector_ofs, chunk_size);
 
       /* Advance. */
       size -= chunk_size;
@@ -513,6 +524,7 @@ inode_update_disk_inode (struct inode_disk *inode_disk,
   return true;
 }
 
+/* Free all data associating with the given INODE. */
 static void
 inode_free_data_all (struct inode *inode)
 {
@@ -533,9 +545,6 @@ inode_free_data_all (struct inode *inode)
   {
     if (inode_disk->direct[i] > 0)
     {
-      // struct buffer_head *bh = bc_find_bh (inode_disk->direct[i]);
-      // if (bh != NULL)
-      //	bc_flush (bh);
       free_map_release (inode_disk->direct[i], 1);
     }
     else
@@ -546,10 +555,12 @@ inode_free_data_all (struct inode *inode)
      and the associating indirect block. */
   if (inode_disk->single_indirect > 0)
   {
+    /* Read the single indirect block. */
     bc_read (indirect_block1->block, 0, inode_disk->single_indirect, 0,
              BLOCK_SECTOR_SIZE);
     for (i = 0; i < TOTAL_INDEX; i++)
     {
+      /* Free the data block if allocated. */
       if (indirect_block1->block[i] > 0)
         free_map_release (indirect_block1->block[i], 1);
       else
@@ -610,19 +621,21 @@ inode_get_index (off_t pos, block_sectors_t *sectors)
   if (pos >= MAX_FILE_SIZE)
     return false;
 
+  /* POS within range of direct blocks. */
   if (pos < MAX_OFFSET_DIRECT)
   {
     sectors->first = pos / BLOCK_SECTOR_SIZE;
     sectors->second = -1;
     sectors->type = DIRECT;
   }
+  /* POS within range of single indirect blocks. */
   else if (pos < MAX_OFFSET_SINGLE)
   {
     sectors->first = (pos - MAX_OFFSET_DIRECT) / BLOCK_SECTOR_SIZE;
     sectors->second = -1;
     sectors->type = SINGLE;
   }
-  else
+  else /* Double indirect block. */
   {
     off_t capacity = (BLOCK_SECTOR_SIZE * BLOCK_SECTOR_SIZE);
     off_t start = (pos - MAX_OFFSET_SINGLE);
@@ -634,7 +647,7 @@ inode_get_index (off_t pos, block_sectors_t *sectors)
   return true;
 }
 
-/*  */
+/* Append the data block to the given disk inode INODE_DISK. */
 static bool
 inode_append (struct inode_disk *inode_disk, off_t start, off_t length)
 {
@@ -661,7 +674,7 @@ inode_append (struct inode_disk *inode_disk, off_t start, off_t length)
 
         /* Update the disk inode. */
         inode_update_disk_inode (inode_disk, &sectors, sector);
-
+        /* Initialize the data block with 0. */
         bc_write (zeros, 0, sector, 0, BLOCK_SECTOR_SIZE);
       }
       else
@@ -679,6 +692,7 @@ inode_append (struct inode_disk *inode_disk, off_t start, off_t length)
   return true;
 }
 
+/* Restore the information of disk inode to in-memory inode. */
 void
 inode_refresh (struct inode *inode)
 {
