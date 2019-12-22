@@ -10,12 +10,14 @@
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
+#define SECTOR_ERROR 0xFFFFFFFF
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
     off_t length;                       /* File size in bytes. */
+    bool is_dir;                        /* Directory? */
     unsigned magic;                     /* Magic number. */
     block_sector_t direct[NUM_DIRECT_BLOCKS]; /* Direct blocks. */
     block_sector_t single_indirect;     /* Indirect block. */
@@ -70,7 +72,7 @@ byte_to_sector (struct inode *inode, off_t pos)
   {
     /* Invalid byte offset POS. */
     if (!inode_get_index (pos, &sectors))
-      return -1;
+      return SECTOR_ERROR;
 
     /* If byte offset is in direct block, */
     if (sectors.type == DIRECT)
@@ -80,7 +82,7 @@ byte_to_sector (struct inode *inode, off_t pos)
     {
       block_indirect_t *indirect_block = malloc (sizeof (block_indirect_t));
       if (indirect_block == NULL)
-        return -1;
+        return SECTOR_ERROR;
       
       /* Access to the first indirect data block. */
       bc_read (indirect_block->block, 0, inode_disk->single_indirect, 0,
@@ -88,6 +90,7 @@ byte_to_sector (struct inode *inode, off_t pos)
       block_sector_t sector_idx = indirect_block->block[sectors.first];
       
       free (indirect_block);
+
       return sector_idx;
     }
     /* If byte offset is in double indirect block, */
@@ -95,7 +98,7 @@ byte_to_sector (struct inode *inode, off_t pos)
     {
       block_indirect_t *indirect_block = malloc (sizeof (block_indirect_t));
       if (indirect_block == NULL)
-        return -1;
+        return SECTOR_ERROR;
 
       /* Access to the first indirect data block. */
       bc_read (indirect_block->block, 0, inode_disk->double_indirect, 0,
@@ -107,12 +110,13 @@ byte_to_sector (struct inode *inode, off_t pos)
       sector_idx = indirect_block->block[sectors.second];
       
       free (indirect_block);
+
       return sector_idx;
     }  // sectors.type == DOUBLE
   }
   else
   {
-    return -1;
+    return SECTOR_ERROR;
   }
 }
 
@@ -137,7 +141,7 @@ inode_init (void)
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
 bool
-inode_create (block_sector_t sector, off_t length)
+inode_create (block_sector_t sector, off_t length, bool is_dir)
 {
   struct inode_disk *disk_inode = NULL;
   bool success = false;
@@ -153,7 +157,8 @@ inode_create (block_sector_t sector, off_t length)
     {
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
-      
+      disk_inode->is_dir = is_dir;
+
       if (length > 0)
         inode_append (disk_inode, 0, length);
       bc_write (disk_inode, 0, sector, 0, BLOCK_SECTOR_SIZE);
@@ -245,6 +250,7 @@ inode_close (struct inode *inode)
           struct buffer_head *bh = bc_find_bh (inode->sector);
           if (bh != NULL)
       	    bc_flush (bh);
+          lock_release (&bh->lock);
           free_map_release (inode->sector, 1); 
         }
 
@@ -275,7 +281,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       /* Disk sector to read, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
 
-      if (sector_idx == -1)
+      if (sector_idx == SECTOR_ERROR)
         break;
 
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
@@ -386,6 +392,16 @@ off_t
 inode_length (const struct inode *inode)
 {
   return inode->data.length;
+}
+
+/* Check whether the inode is a directory inode or file inode.
+   Return TRUE if the inode points to directory,
+   return FALSE otherwise. */
+bool inode_is_dir (struct inode *inode)
+{
+  struct inode_disk *inode_disk = inode_to_disk_inode (inode);
+
+  return inode_disk->is_dir;
 }
 
 /* Update the disk inode information for newly appended data sector. */
@@ -662,3 +678,10 @@ inode_append (struct inode_disk *inode_disk, off_t start, off_t length)
   free (zeros);
   return true;
 }
+
+void
+inode_refresh (struct inode *inode)
+{
+  inode_to_disk_inode (inode);
+}
+

@@ -33,4 +33,10 @@ void close (int fd);
 int mmap (int fd, void *addr);
 void munmap (mapid_t mapid);
 
+bool chdir (const char *dir);
+bool mkdir (const char *dir);
+bool readdir (int fd, char *name);
+bool isdir (int fd);
+int inumber (int fd);
+
 #endif /* userprog/syscall.h */

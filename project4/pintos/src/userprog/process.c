@@ -210,6 +210,9 @@ process_exit (void)
   vm_destroy (&cur->vm);
 	/* Delete all pages associating with this thread. */
 	page_destroy (cur);
+  /* Deallocate the working directory. */
+  if (cur->cur_dir != NULL)
+    dir_close (cur->cur_dir);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */

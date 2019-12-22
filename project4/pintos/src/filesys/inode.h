@@ -13,7 +13,7 @@ enum BLOCK_TYPE {DIRECT, SINGLE, DOUBLE};
 #define TOTAL_INDEX 128
 
 /* Total number of direct blocks. */
-#define NUM_DIRECT_BLOCKS 124
+#define NUM_DIRECT_BLOCKS 123
 /* Maximum range of direct blocks. */
 #define MAX_OFFSET_DIRECT (NUM_DIRECT_BLOCKS * BLOCK_SECTOR_SIZE)
 /* Maximum range of single indirect blocks. */
@@ -34,7 +34,7 @@ typedef struct _block_sectors_t
 } block_sectors_t;
 
 void inode_init (void);
-bool inode_create (block_sector_t, off_t);
+bool inode_create (block_sector_t, off_t, bool);
 struct inode *inode_open (block_sector_t);
 struct inode *inode_reopen (struct inode *);
 block_sector_t inode_get_inumber (const struct inode *);
@@ -45,5 +45,7 @@ off_t inode_write_at (struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
+void inode_refresh (struct inode *);
+bool inode_is_dir (struct inode *);
 
 #endif /* filesys/inode.h */

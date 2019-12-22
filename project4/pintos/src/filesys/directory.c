@@ -26,7 +26,7 @@ struct dir_entry
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true);
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -192,6 +192,10 @@ dir_remove (struct dir *dir, const char *name)
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
+  /* Directory entries '.' and '..' are not removable. */
+  if (strcmp (name, ".") == 0 || strcmp (name, "..") == 0)
+    return false;
+
   /* Find directory entry. */
   if (!lookup (dir, name, &e, &ofs))
     goto done;
@@ -212,6 +216,7 @@ dir_remove (struct dir *dir, const char *name)
 
  done:
   inode_close (inode);
+
   return success;
 }
 
@@ -233,4 +238,23 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
         } 
     }
   return false;
+}
+
+/* Check whether the directory is empty or not.
+   Return TRUE if empty, return FALSE otherwise. */
+bool
+dir_is_empty (struct inode *inode)
+{
+  off_t offset = 0;
+  off_t size = sizeof (struct dir_entry);
+  struct dir_entry entry;
+
+  while (inode_read_at (inode, &entry, size, offset) == size)
+  {
+    if (entry.in_use == true && strcmp (entry.name, ".") != 0
+        && strcmp (entry.name, "..") != 0)
+      return false;
+    offset += size;
+  }
+  return true;
 }

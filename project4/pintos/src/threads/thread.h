@@ -12,6 +12,7 @@
 #include <list.h>
 #include <hash.h>
 #include <stdint.h>
+#include "filesys/directory.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -133,6 +134,8 @@ struct thread
     int next_map_id;                    /* Map_id to be given. */
 		void *esp;													/* Stack pointer(kernel page_fault) */
 #endif
+    struct dir *cur_dir;                /* Working directory. */
+    struct dir *parent_dir;             /* Use when working dir is removed. */
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

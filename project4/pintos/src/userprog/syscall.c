@@ -13,6 +13,7 @@
 #include "devices/input.h"
 #include "filesys/filesys.h"
 #include "filesys/file.h"
+#include "filesys/inode.h"
 
 #define USER_VADDR_LOW_BOUND ((void*) 0x08048000)
 #define FAILURE -1
@@ -145,6 +146,36 @@ syscall_handler (struct intr_frame *f UNUSED)
     {
       copy_args (f->esp, args, 1);
       munmap ((mapid_t) args[0]);
+      break;
+    }
+    case SYS_CHDIR:                  /* Change the current directory. */
+    {
+      copy_args (f->esp, args, 1);
+      f->eax = chdir ((const char *) args[0]);
+      break;
+    }
+    case SYS_MKDIR:                  /* Create a directory. */
+    {
+      copy_args (f->esp, args, 1);
+      f->eax = mkdir ((const char *) args[0]);
+      break;
+    }
+    case SYS_READDIR:                /* Reads a directory entry. */
+    {
+      copy_args (f->esp, args, 2);
+      f->eax = readdir (args[0], (char *) args[1]);
+      break;
+    }
+    case SYS_ISDIR:                  /* Tests if a fd represents a directory. */
+    {
+      copy_args (f->esp, args, 1);
+      f->eax = isdir (args[0]);
+      break;
+    }
+    case SYS_INUMBER:                /* Returns the inode number for a fd. */
+    {
+      copy_args (f->esp, args, 1);
+      f->eax = inumber (args[0]);
       break;
     }
     default:
@@ -407,6 +438,10 @@ write (int fd, const void *buffer, unsigned size)
   if (cur->fdt[fd] == NULL)
     return FAILURE;
 
+  if (inode_is_dir (cur->fdt[fd]->inode))
+    // return FAILURE;
+    return FAILURE;
+
   /* Pinning the page associating with the given user address. */
 	set_pin_on_buffer (buffer, size);
 
@@ -541,6 +576,100 @@ munmap (mapid_t mapid)
     return ;
 	
   munmap_one_entry (mmfile);
+}
+
+/* Change the current working directory of the process to DIR.
+   Return TRUE if successful, return FALSE otherwise. */
+bool chdir (const char *dir)
+{
+  /* If the user pass the null pointer, exit(-1). */
+	if (dir == NULL)
+		exit (FAILURE);
+
+  /* Checks the address passed by the user. */
+  /* If it's not valid, exit(-1). */
+	check_user_buffer ((void *)dir, strlen (dir) + 1, false);
+
+  /* If the directory name is empty, exit(-1). */
+	//if (strlen (dir) == 0)
+	//	return FAILURE;
+
+  return filesys_chdir (dir);
+}
+
+/* Create the directory named DIR.
+   Return TRUE if successful, return FALSE otherwise. */
+bool mkdir (const char *dir)
+{
+  /* If the user pass the null pointer, exit(-1). */
+	if (dir == NULL)
+		exit (FAILURE);
+
+  /* Checks the address passed by the user. */
+  /* If it's not valid, exit(-1). */
+	check_user_buffer ((void *)dir, strlen (dir) + 1, false);
+
+  /* If the directory name is empty, exit(-1). */
+	if (strlen (dir) == 0)
+		return false;
+  return filesys_mkdir (dir);
+}
+
+/* Read a directory entry from file descriptor FD,
+   which must represent a directory. 
+   If successful, store file name in NAME and return TRUE. */
+bool readdir (int fd, char *name)
+{
+  struct thread *cur = thread_current ();
+  /* If the user pass the null pointer, exit(-1). */
+	if (name == NULL)
+		exit (FAILURE);
+  
+  /* FD is not valid. */
+  if (cur->fdt[fd] == NULL)
+		exit (FAILURE);
+  
+  /* Checks the address passed by the user. */
+  /* If it's not valid, exit(-1). */
+	check_user_buffer ((void *)name, NAME_MAX + 1, false);
+
+  return filesys_readdir (fd, name);
+}
+
+/* Return TRUE if FD represents a directory,
+   return FALSE if FD represents an ordiinary file. */
+bool isdir (int fd)
+{
+  struct file *file = NULL;
+  struct inode *inode = NULL;
+
+  /* Validity check. */
+  if (fd == 0 || fd == 1 || fd >= FDT_SIZE)
+    exit (FAILURE);
+  
+  file = fdt_find (fd);
+  
+/* FD is not valid. */
+  if (file == NULL)
+		exit (FAILURE);
+
+  return inode_is_dir (inode);
+}
+
+/* Return the inode number of the inode associated with FD. */
+int inumber (int fd)
+{
+  struct thread *cur = thread_current ();
+
+  /* Validity check. */
+  if (fd == 0 || fd == 1 || fd >= FDT_SIZE)
+    exit (FAILURE);
+  
+  /* FD is not valid. */
+  if (cur->fdt[fd] == NULL)
+		exit (FAILURE);
+
+  return filesys_inumber (fd);
 }
 
 /* Check whether the pointer passed by the user is

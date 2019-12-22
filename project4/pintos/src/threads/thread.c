@@ -103,6 +103,8 @@ thread_init (void)
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  initial_thread->cur_dir = NULL;
+  initial_thread->parent_dir = NULL;
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -188,6 +190,7 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
+  
 
   /* Prepare thread for first run by initializing its stack.
      Do this atomically so intermediate values for the 'stack'
@@ -623,6 +626,12 @@ init_thread (struct thread *t, const char *name, int priority)
     t->fdt[i] = NULL;
 	t->opened_file = NULL;
 #endif
+  /* Set the working directory of the thread just created
+     as the working directory of the thread
+     which creates the current thread. */
+  if (running_thread ()->cur_dir != NULL)
+    t->cur_dir = dir_reopen (running_thread ()->cur_dir) ;
+  t->parent_dir = NULL;
 }
 
 /* Allocates a SIZE-byte frame at the top of thread T's stack and
