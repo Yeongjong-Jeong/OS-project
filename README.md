@@ -1,5 +1,5 @@
 # OS-project
-operating_system_project_pintos
+operating_system
+project_pintos
 
-20140519
-Yeongjong-Jeong
+Yeongjong Jeong
